@@ -72,7 +72,11 @@ impl Migration {
 
 impl PartialEq for Migration {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
+        self.name == other.name &&
+        // lol lmao
+        self.actions.iter().map(|a| serde_json::to_string(a).unwrap())
+            .zip(other.actions.iter().map(|a| serde_json::to_string(a).unwrap()))
+            .all(|(a, b)| a == b)
     }
 }
 

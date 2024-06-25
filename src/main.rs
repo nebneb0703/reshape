@@ -4,11 +4,11 @@ use std::{
     path::Path,
 };
 
-use anyhow::Context;
-use clap::{Args, Parser};
+use anyhow::{Context, anyhow};
+use clap::{Args, Parser, ArgAction};
 use reshape::{
     migrations::{Action, Migration},
-    Reshape,
+    Reshape, Range
 };
 use serde::{Deserialize, Serialize};
 
@@ -63,14 +63,17 @@ enum MigrationCommand {
     )]
     Start(MigrateOptions),
 
-    #[clap(about = "Completes an in-progress migration", display_order = 2)]
+    #[clap(display_order = 2)] // todo: add about
+    Status(StatusOptions),
+
+    #[clap(about = "Completes an in-progress migration", display_order = 3)]
     Complete(ConnectionOptions),
 
     #[clap(
         about = "Aborts an in-progress migration without losing any data",
-        display_order = 3
+        display_order = 4
     )]
-    Abort(ConnectionOptions),
+    Abort(AbortOptions),
 }
 
 #[derive(Args)]
@@ -78,6 +81,17 @@ struct MigrateOptions {
     // Some comment
     #[clap(long, short)]
     complete: bool,
+    #[clap(flatten)]
+    connection_options: ConnectionOptions,
+    #[clap(flatten)]
+    find_migrations_options: FindMigrationsOptions,
+
+    #[clap(flatten)]
+    range: RangeOptions,
+}
+
+#[derive(Args)]
+struct StatusOptions {
     #[clap(flatten)]
     connection_options: ConnectionOptions,
     #[clap(flatten)]
@@ -100,10 +114,52 @@ struct ConnectionOptions {
     password: String,
 }
 
+
+#[derive(Args)]
+struct AbortOptions {
+    #[clap(flatten)]
+    range: RangeOptions,
+
+    #[clap(flatten)]
+    connection: ConnectionOptions,
+}
+
+#[derive(Args)]
+#[group(
+    multiple = false,
+    required = true,
+)]
+struct RangeOptions {
+    #[clap(short, long, action = ArgAction::SetTrue)]
+    all: bool,
+
+    #[clap(short, long)]
+    number: Option<usize>,
+
+    migration: Option<String>,
+}
+
+impl From<RangeOptions> for Range {
+    fn from(value: RangeOptions) -> Self {
+        match value {
+            RangeOptions { all: true, number: None, migration: None } => {
+                Range::All
+            },
+            RangeOptions { all: false, number: Some(number), migration: None } => {
+                Range::Number(number)
+            },
+            RangeOptions { all: false, number: None, migration: Some(migration) } => {
+                Range::UpTo(migration)
+            },
+            _ => unreachable!("invalid abort options"),
+        }
+    }
+}
+
 #[derive(Parser)]
 struct FindMigrationsOptions {
-    #[clap(long, default_value = "migrations")]
-    dirs: Vec<String>,
+    #[clap(long, default_value = "migrations.plan")]
+    plan: String
 }
 
 fn main() -> anyhow::Result<()> {
@@ -116,7 +172,7 @@ fn run(opts: Opts) -> anyhow::Result<()> {
         Command::Migration(MigrationCommand::Start(opts)) | Command::Migrate(opts) => {
             let mut reshape = reshape_from_connection_options(&opts.connection_options)?;
             let migrations = find_migrations(&opts.find_migrations_options)?;
-            reshape.migrate(migrations)?;
+            reshape.migrate(migrations, opts.range.into())?;
 
             // Automatically complete migration if --complete flag is set
             if opts.complete {
@@ -124,15 +180,28 @@ fn run(opts: Opts) -> anyhow::Result<()> {
             }
 
             Ok(())
+        },
+        Command::Migration(MigrationCommand::Status(opts)) => {
+            let migrations = find_migrations(&opts.find_migrations_options)?;
+
+            let mut reshape = reshape_from_connection_options(&opts.connection_options)?;
+
+            reshape.status(migrations)
         }
         Command::Migration(MigrationCommand::Complete(opts)) | Command::Complete(opts) => {
             let mut reshape = reshape_from_connection_options(&opts)?;
             reshape.complete()
-        }
-        Command::Migration(MigrationCommand::Abort(opts)) | Command::Abort(opts) => {
+        },
+        Command::Migration(MigrationCommand::Abort(opts)) => {
+            let mut reshape = reshape_from_connection_options(&opts.connection)?;
+
+            reshape.abort(opts.range.into())
+        },
+        Command::Abort(opts) => {
             let mut reshape = reshape_from_connection_options(&opts)?;
-            reshape.abort()
-        }
+
+            reshape.abort(Range::All)
+        },
         Command::SchemaQuery(opts) | Command::GenerateSchemaQuery(opts) => {
             let migrations = find_migrations(&opts)?;
             let query = migrations
@@ -141,7 +210,7 @@ fn run(opts: Opts) -> anyhow::Result<()> {
             println!("{}", query.unwrap_or_else(|| "".to_string()));
 
             Ok(())
-        }
+        },
     }
 }
 
@@ -178,60 +247,39 @@ fn reshape_from_connection_options(opts: &ConnectionOptions) -> anyhow::Result<R
 }
 
 fn find_migrations(opts: &FindMigrationsOptions) -> anyhow::Result<Vec<Migration>> {
-    let search_paths = opts
-        .dirs
-        .iter()
-        .map(Path::new)
-        // Filter out all directories that don't exist
-        .filter(|path| path.exists());
+    let plan_file = fs::read_to_string(&opts.plan)?;
 
-    // Find all files in the search paths
-    let mut file_paths = Vec::new();
-    for search_path in search_paths {
-        let entries = fs::read_dir(search_path)?;
-        for entry in entries {
-            let path = entry?.path();
-            file_paths.push(path);
-        }
+    let planned_migrations = plan_file.lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter(|line| !line.trim().starts_with('#'));
+
+    let mut migrations = Vec::with_capacity(plan_file.lines().count());
+
+    for planned_migration in planned_migrations {
+        let path = Path::new(planned_migration);
+
+        let data = fs::read_to_string(path)?;
+
+        let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
+            return Err(anyhow!(
+                "migration {} has no file extension",
+                path.to_string_lossy()
+            ));
+        };
+
+        let file_migration = decode_migration_file(&data, extension).with_context(|| {
+            format!("failed to parse migration file {}", path.display())
+        })?;
+
+        let file_name = path.file_stem().and_then(|name| name.to_str()).unwrap();
+        migrations.push(Migration {
+            name: file_migration.name.unwrap_or_else(|| file_name.to_string()),
+            description: file_migration.description,
+            actions: file_migration.actions,
+        })
     }
 
-    // Sort all files by their file names (without extension)
-    // The files are sorted naturally, e.g. "1_test_migration" < "10_test_migration"
-    file_paths.sort_unstable_by(|path1, path2| {
-        let file1 = path1.as_path().file_stem().unwrap().to_str().unwrap();
-        let file2 = path2.as_path().file_stem().unwrap().to_str().unwrap();
-
-        lexical_sort::natural_cmp(file1, file2)
-    });
-
-    file_paths
-        .iter()
-        .map(|path| {
-            let mut file = File::open(path)?;
-
-            // Read file data
-            let mut data = String::new();
-            file.read_to_string(&mut data)?;
-
-            Ok((path, data))
-        })
-        .map(|result| {
-            result.and_then(|(path, data)| {
-                let extension = path.extension().and_then(|ext| ext.to_str()).unwrap();
-                let file_migration =
-                    decode_migration_file(&data, extension).with_context(|| {
-                        format!("failed to parse migration file {}", path.display())
-                    })?;
-
-                let file_name = path.file_stem().and_then(|name| name.to_str()).unwrap();
-                Ok(Migration {
-                    name: file_migration.name.unwrap_or_else(|| file_name.to_string()),
-                    description: file_migration.description,
-                    actions: file_migration.actions,
-                })
-            })
-        })
-        .collect()
+    Ok(migrations)
 }
 
 fn decode_migration_file(data: &str, extension: &str) -> anyhow::Result<FileMigration> {

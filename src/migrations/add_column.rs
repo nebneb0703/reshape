@@ -295,6 +295,8 @@ impl Action for AddColumn {
         // This constraint is set as NOT VALID so it doesn't apply to existing rows and
         // the existing rows don't need to be scanned under an exclusive lock.
         // Thanks to this, we can set the full column as NOT NULL later with minimal locking.
+
+        // todo: this is not idempotent
         if !self.column.nullable {
             let query = format!(
                 r#"
@@ -306,6 +308,9 @@ impl Action for AddColumn {
                 constraint_name = self.not_null_constraint_name(ctx),
                 column = temp_column_name,
             );
+
+            println!("DEBUG: {query}");
+
             db.run(&query)
                 .context("failed to add NOT NULL constraint")?;
         }

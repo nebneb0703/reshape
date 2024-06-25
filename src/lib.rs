@@ -50,13 +50,24 @@ impl Reshape {
         Ok(Reshape { db })
     }
 
-    pub fn migrate(
+    pub fn status(
         &mut self,
         migrations: impl IntoIterator<Item = Migration>,
     ) -> anyhow::Result<()> {
         self.db.lock(|db| {
+            let state = State::load(db)?;
+            status(db, &state, migrations)
+        })
+    }
+
+    pub fn migrate(
+        &mut self,
+        migrations: impl IntoIterator<Item = Migration>,
+        range: Range,
+    ) -> anyhow::Result<()> {
+        self.db.lock(|db| {
             let mut state = State::load(db)?;
-            migrate(db, &mut state, migrations)
+            migrate(db, &mut state, migrations, range)
         })
     }
 
@@ -67,10 +78,10 @@ impl Reshape {
         })
     }
 
-    pub fn abort(&mut self) -> anyhow::Result<()> {
+    pub fn abort(&mut self, range: Range) -> anyhow::Result<()> {
         self.db.lock(|db| {
             let mut state = State::load(db)?;
-            abort(db, &mut state)
+            abort(db, &mut state, range)
         })
     }
 
@@ -125,6 +136,12 @@ impl Reshape {
     }
 }
 
+pub enum Range {
+    All,
+    Number(usize),
+    UpTo(String),
+}
+
 pub fn latest_schema_from_migrations(migrations: &[Migration]) -> Option<String> {
     migrations
         .last()
@@ -140,46 +157,342 @@ fn schema_name_for_migration(migration_name: &str) -> String {
     format!("migration_{}", migration_name)
 }
 
+fn status(
+    db: &mut DbConn,
+    state: &State,
+    migrations: impl IntoIterator<Item = Migration>,
+) -> anyhow::Result<()> {
+    let remaining_migrations = state::remaining_migrations(db, migrations)?;
+    let current_migration = state::current_migration(db)?;
+
+    let current_migration = |space| if let Some(current_migration) = current_migration {
+        println!("...");
+        println!("[x]{}{}", "".repeat(space), current_migration);
+    };
+
+    match state {
+        State::Idle => {
+            println!("Status: Idle.");
+            println!();
+
+            current_migration(1);
+
+            for migration in remaining_migrations {
+                println!("[ ] {}", migration.name);
+            }
+        },
+        State::Applying { migrations } | State::InProgress { migrations } => {
+            let status = match state {
+                State::Applying { .. } => "Applying",
+                State::InProgress { .. } => "In Progress",
+                _ => unreachable!(),
+            };
+
+            println!("Status: {}", status);
+            println!();
+
+            let mut valid_up_to_index = 0;
+
+            for i in 0..remaining_migrations.len().max(migrations.len()) {
+                valid_up_to_index = i;
+
+                if migrations.get(i).ne(&remaining_migrations.get(i)) {
+                    valid_up_to_index -= 1;
+                    break;
+                }
+            }
+
+            let diverging = valid_up_to_index != migrations.len() - 1;
+
+            if diverging {
+                current_migration(4);
+
+                for valid_migration in migrations[0..=valid_up_to_index].iter() {
+                    println!("[~]    {}", valid_migration.name);
+                }
+
+                println!(" +     Diverging...");
+                println!(" |\\");
+                println!(" | \\");
+                println!(" +  +");
+
+                let mut end = false;
+
+                for i in valid_up_to_index + 1..remaining_migrations.len().max(migrations.len()) {
+                    if let Some(applied_migration) = migrations.get(i) {
+                        // println!(" |  |  ");
+                        println!(
+                            "[~] {}  {}",
+                            if end { ' ' } else { '|' },
+                            applied_migration.name
+                        );
+
+                        if migrations.len() == i + 1 { end = true; }
+                    }
+
+                    if let Some(new_migration) = remaining_migrations.get(i) {
+                        // println!(" |  |  ");
+                        println!(
+                            " {} [ ] {}",
+                            if end { ' ' } else { '|' },
+                            new_migration.name
+                        );
+
+                        if remaining_migrations.len() == i + 1 { end = true; }
+                    }
+                }
+            } else {
+                current_migration(1);
+
+                for valid_migration in migrations {
+                    println!("[~] {}", valid_migration.name);
+                }
+
+                for migration in remaining_migrations.get(valid_up_to_index + 1..).into_iter().flatten() {
+                    println!("[ ] {}", migration.name);
+                }
+            }
+        },
+        State::Completing { migrations, current_migration_index, .. } => {
+            println!("Status: Completing");
+            println!();
+
+            let mut valid_up_to_index = 0;
+
+            for i in 0..remaining_migrations.len().max(migrations.len()) {
+                valid_up_to_index = i;
+
+                if migrations.get(i).ne(&remaining_migrations.get(i)) {
+                    valid_up_to_index -= 1;
+                    break;
+                }
+            }
+
+            let diverging = valid_up_to_index != migrations.len() - 1;
+
+            if diverging {
+                current_migration(4);
+
+                for valid_migration in migrations[0..=valid_up_to_index].iter() {
+                    println!("[x]    {}", valid_migration.name);
+                }
+
+                println!(" +     Diverging...");
+                println!(" |\\");
+                println!(" | \\");
+                println!(" +  +");
+
+                let mut end = false;
+
+                for i in valid_up_to_index + 1..remaining_migrations.len().max(migrations.len()) {
+                    if let Some(applied_migration) = migrations.get(i) {
+                        // println!(" |  |  ");
+                        println!(
+                            "[{}] {}  {}",
+                            if i >= *current_migration_index { 'x' } else { '~' },
+                            if end { ' ' } else { '|' },
+                            applied_migration.name
+                        );
+
+                        if migrations.len() == i + 1 { end = true; }
+                    }
+
+                    if let Some(new_migration) = remaining_migrations.get(i) {
+                        // println!(" |  |  ");
+                        println!(
+                            " {} [ ] {}",
+                            if end { ' ' } else { '|' },
+                            new_migration.name
+                        );
+
+                        if remaining_migrations.len() == i + 1 { end = true; }
+                    }
+                }
+            } else {
+                current_migration(1);
+
+                for (i, valid_migration) in migrations.iter().enumerate() {
+                    println!(
+                        "[{}] {}",
+                        if i >= *current_migration_index { 'x' } else { '~' },
+                        valid_migration.name
+                    );
+                }
+
+                for migration in remaining_migrations.get(valid_up_to_index + 1..).into_iter().flatten() {
+                    println!("[ ] {}", migration.name);
+                }
+            }
+        },
+        State::Aborting { migrations, last_migration_index, .. } => {
+            println!("Status: Aborting");
+            println!();
+
+            let mut valid_up_to_index = 0;
+
+            for i in 0..remaining_migrations.len().max(migrations.len()) {
+                valid_up_to_index = i;
+
+                if migrations.get(i).ne(&remaining_migrations.get(i)) {
+                    valid_up_to_index -= 1;
+                    break;
+                }
+            }
+
+            let diverging = valid_up_to_index != migrations.len() - 1;
+
+            if diverging {
+                current_migration(4);
+
+                for valid_migration in migrations[0..=valid_up_to_index].iter() {
+                    println!("[~]    {}", valid_migration.name);
+                }
+
+                println!(" +     Diverging...");
+                println!(" |\\");
+                println!(" | \\");
+                println!(" +  +");
+
+                let mut end = false;
+
+                for i in valid_up_to_index + 1..remaining_migrations.len().max(migrations.len()) {
+                    if let Some(applied_migration) = migrations.get(i) {
+                        // println!(" |  |  ");
+                        println!(
+                            "[{}] {}  {}",
+                            if i <= *last_migration_index { '~' } else { '@' },
+                            if end { ' ' } else { '|' },
+                            applied_migration.name
+                        );
+
+                        if migrations.len() == i + 1 { end = true; }
+                    }
+
+                    if let Some(new_migration) = remaining_migrations.get(i) {
+                        // println!(" |  |  ");
+                        println!(
+                            " {} [ ] {}",
+                            if end { ' ' } else { '|' },
+                            new_migration.name
+                        );
+
+                        if remaining_migrations.len() == i + 1 { end = true; }
+                    }
+                }
+            } else {
+                current_migration(1);
+
+                for (i, valid_migration) in migrations.iter().enumerate() {
+                    println!(
+                        "[{}] {}",
+                        if i <= *last_migration_index { '~' } else { '@' },
+                        valid_migration.name
+                    );
+                }
+
+                for migration in remaining_migrations.get(valid_up_to_index + 1..).into_iter().flatten() {
+                    println!("[ ] {}", migration.name);
+                }
+            }
+        },
+    }
+
+    Ok(())
+}
+
 fn migrate(
     db: &mut DbConn,
     state: &mut State,
     migrations: impl IntoIterator<Item = Migration>,
+    range: Range,
 ) -> anyhow::Result<()> {
     // Make sure no migration is in progress
-    if let State::InProgress { .. } = &state {
+    if let State::Completing { .. } = &state {
         println!(
-            "Migration already in progress, please complete using 'reshape migration complete'"
+            "Migration already in progress and has started completion, please finish using 'reshape migration complete'"
         );
         return Ok(());
     }
 
-    if let State::Completing { .. } = &state {
-        println!(
-                    "Migration already in progress and has started completion, please finish using 'reshape migration complete'"
-                );
-        return Ok(());
+    if let State::Aborting { .. } = &state {
+        return Err(anyhow!(
+            "Migration has begun aborting, please finish using `reshape migration abort`"
+        ))
     }
 
     // Determine which migrations need to be applied by comparing the provided migrations
     // with the already applied ones stored in the state. This will throw an error if the
     // two sets of migrations don't agree, for example if a new migration has been added
     // in between two existing ones.
-    let remaining_migrations = state::remaining_migrations(db, migrations)?;
-    if remaining_migrations.is_empty() {
-        println!("No migrations left to apply");
-        return Ok(());
+    let mut remaining_migrations = state::remaining_migrations(db, migrations)?;
+
+    if let Range::UpTo(migration) = &range {
+        let index = remaining_migrations.iter()
+            .position(|m| &m.name == migration)
+            .ok_or(anyhow!(
+                "migration {} not found",
+                migration
+            ))?;
+
+        remaining_migrations.resize_with(index + 1, || unreachable!());
+    };
+
+    if let State::InProgress { migrations: existing_migrations } = state.clone() {
+        // If we have already started applying some migrations we need to ensure that
+        // they are the same ones we want to apply now
+        if Some(existing_migrations.as_slice()) != remaining_migrations.get(0..existing_migrations.len()) {
+            return Err(anyhow!(
+                "a previous migration is already in progress, and diverges from new migrations. Please run `reshape migration abort` and then run migrate again."
+            ))
+        }
+
+        if existing_migrations.len() == remaining_migrations.len() {
+            println!("Migration already in progress, please complete using 'reshape migration complete'");
+
+            return Ok(());
+        }
+
+        if let Range::Number(n) = &range {
+            remaining_migrations.resize_with(remaining_migrations.len().min(n + existing_migrations.len()), || unreachable!());
+        };
+
+        if remaining_migrations.is_empty() {
+            println!("No migrations left to apply");
+            return Ok(());
+        }
+
+        state.in_progress(remaining_migrations.clone());
+
+        // "Abort" the current schema, and continue with a new one.
+        // This will drop the existing schema, abort the new, still unapplied migrations
+        // (which is safe because they are idempotent), and then rerun the migration,
+        // now in the "Applying" state.
+
+        let target_migration = &existing_migrations.last().unwrap().name;
+
+        // Drop the existing schema here, as the migrations list changes and won't be
+        // correct in the function.
+        let schema_name = schema_name_for_migration(target_migration);
+        db.run(&format!("DROP SCHEMA IF EXISTS {} CASCADE", schema_name,))
+            .with_context(|| format!("failed to drop schema {}", schema_name))?;
+
+        return abort(db, state, Range::Number(0));
     }
 
-    // If we have already started applying some migrations we need to ensure that
-    // they are the same ones we want to apply now
-    if let State::Applying {
-        migrations: existing_migrations,
-    } = &state
-    {
-        if existing_migrations != &remaining_migrations {
+    if let State::Applying { migrations: existing_migrations } = &state {
+        if existing_migrations != &remaining_migrations[0..existing_migrations.len()] {
             return Err(anyhow!(
                 "a previous migration seems to have failed without cleaning up. Please run `reshape migration abort` and then run migrate again."
             ));
+        }
+
+        if let Range::Number(n) = &range {
+            remaining_migrations.resize_with(remaining_migrations.len().min(n + existing_migrations.len()), || unreachable!());
+        };
+
+        if remaining_migrations.is_empty() {
+            println!("No migrations left to apply");
+            return Ok(());
         }
     }
 
@@ -230,7 +543,9 @@ fn migrate(
 
     // If a migration failed, we abort all the migrations that were applied
     if let Err(err) = result {
-        println!("A migration failed, aborting migrations that have already been applied");
+        println!("Migration failed, aborting.");
+
+        println!("ERROR: {err:#?}");
 
         // Set to the Aborting state. This is to ensure that the failed
         // migration is fully aborted and nothing is left dangling.
@@ -242,8 +557,7 @@ fn migrate(
             last_action_index + 1,
         );
 
-        // Abort will only
-        abort(db, state)?;
+        abort(db, state, Range::Number(remaining_migrations.len() - last_migration_index + 1))?;
 
         return Err(err);
     }
@@ -270,30 +584,32 @@ fn migrate(
 fn complete(db: &mut DbConn, state: &mut State) -> anyhow::Result<()> {
     // Make sure a migration is in progress
     let (remaining_migrations, starting_migration_index, starting_action_index) = match state.clone() {
-                State::InProgress { migrations } => {
-                    // Move into the Completing state. Once in this state,
-                    // the migration can't be aborted and must be completed.
-                    state.completing(migrations.clone(), 0, 0);
-                    state.save(db).context("failed to save state")?;
+        State::InProgress { migrations } => {
+            // Move into the Completing state. Once in this state,
+            // the migration can't be aborted and must be completed.
+            state.completing(migrations.clone(), 0, 0);
+            state.save(db).context("failed to save state")?;
 
-                    (migrations, 0, 0)
-                },
-                State::Completing {
-                    migrations,
-                    current_migration_index,
-                    current_action_index
-                } => (migrations, current_migration_index, current_action_index),
-                State::Aborting { .. } => {
-                    return Err(anyhow!("migration been aborted and can't be completed. Please finish using `reshape migration abort`."))
-                }
-                State::Applying { .. } => {
-                    return Err(anyhow!("a previous migration unexpectedly failed. Please run `reshape migrate` to try applying the migration again."))
-                }
-                State::Idle => {
-                    println!("No migration in progress");
-                    return Ok(());
-                }
-            };
+            (migrations, 0, 0)
+        },
+        State::Completing {
+            migrations,
+            current_migration_index,
+            current_action_index
+        } => (migrations, current_migration_index, current_action_index),
+        State::Aborting { .. } => {
+            return Err(anyhow!("migration been aborted and can't be completed. Please finish using `reshape migration abort`."))
+        }
+        State::Applying { .. } => {
+            return Err(anyhow!("a previous migration unexpectedly failed. Please run `reshape migrate` to try applying the migration again."))
+        }
+        State::Idle => {
+            println!("No migration in progress");
+            return Ok(());
+        }
+    };
+
+    // todo: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 
     // Remove previous migration's schema
     if let Some(current_migration) = &state::current_migration(db)? {
@@ -397,12 +713,12 @@ fn complete(db: &mut DbConn, state: &mut State) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn abort(db: &mut DbConn, state: &mut State) -> anyhow::Result<()> {
+fn abort(db: &mut DbConn, state: &mut State, range: Range) -> anyhow::Result<()> {
     let (remaining_migrations, last_migration_index, last_action_index) = match state.clone() {
         State::InProgress { migrations } | State::Applying { migrations } => {
             // Set to the Aborting state. Once this is done, the migration has to
             // be fully aborted and can't be completed.
-            state.aborting(migrations.clone(), 0, 0);
+            state.aborting(migrations.clone(), usize::MAX, usize::MAX);
             state.save(db)?;
 
             (migrations, usize::MAX, usize::MAX)
@@ -411,7 +727,9 @@ fn abort(db: &mut DbConn, state: &mut State) -> anyhow::Result<()> {
             migrations,
             last_migration_index,
             last_action_index,
-        } => (migrations, last_migration_index, last_action_index),
+        } => {
+            (migrations, last_migration_index, last_action_index)
+        },
         State::Completing { .. } => {
             return Err(anyhow!("migration completion has already been started. Please run `reshape migration complete` again to finish it."));
         }
@@ -419,6 +737,17 @@ fn abort(db: &mut DbConn, state: &mut State) -> anyhow::Result<()> {
             println!("No migration is in progress");
             return Ok(());
         }
+    };
+
+    let migrations_up_to_index = match range {
+        Range::All => 0,
+        Range::Number(number) => remaining_migrations.len() - number,
+        Range::UpTo(migration) => remaining_migrations.iter()
+            .position(|m| m.name == migration)
+            .ok_or(anyhow!(
+                "migration {} not in progress",
+                migration
+            ))?,
     };
 
     // Remove new migration's schema
@@ -435,6 +764,10 @@ fn abort(db: &mut DbConn, state: &mut State) -> anyhow::Result<()> {
         // the migration was never applied in the first place.
         if migration_index >= last_migration_index {
             continue;
+        }
+
+        if migration_index < migrations_up_to_index {
+            break;
         }
 
         print!("Aborting '{}' ", migration.name);
@@ -466,6 +799,14 @@ fn abort(db: &mut DbConn, state: &mut State) -> anyhow::Result<()> {
     helpers::tear_down_helpers(db).context("failed to tear down helpers")?;
 
     *state = State::Idle;
+
+    // todo: better condition
+    if migrations_up_to_index != 0 {
+        // Running migrations again is fine as they are idempotent.
+        return migrate(db, state, remaining_migrations, Range::Number(migrations_up_to_index)); // todo: fix this
+    }
+
+
     state.save(db).context("failed to save state")?;
 
     Ok(())

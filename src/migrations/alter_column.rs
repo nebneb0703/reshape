@@ -77,6 +77,9 @@ impl Action for AlterColumn {
             table = self.table,
             temp_column_definition = temp_column_definition_parts.join(" "),
         );
+
+        println!("DEBUG: {query}");
+
         db.run(&query).context("failed to add temporary column")?;
 
         // If up or down wasn't provided, we default to simply moving the value over.

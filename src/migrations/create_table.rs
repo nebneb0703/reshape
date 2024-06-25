@@ -105,7 +105,7 @@ impl Action for CreateTable {
 
         let query = &format!(
             r#"
-            CREATE TABLE "{name}" (
+            CREATE TABLE IF NOT EXISTS "{name}" (
                 {definition}
             )
             "#,

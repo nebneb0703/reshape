@@ -1,6 +1,6 @@
 use colored::Colorize;
 use postgres::{Client, NoTls};
-use reshape::{migrations::Migration, Reshape};
+use reshape::{migrations::Migration, Reshape, Range};
 
 pub struct Test<'a> {
     name: &'a str,
@@ -133,7 +133,7 @@ impl Test<'_> {
             .first_migration
             .as_ref()
             .expect("no starting migration set");
-        self.reshape.migrate(vec![first_migration.clone()]).unwrap();
+        self.reshape.migrate(vec![first_migration.clone()], Range::All).unwrap();
 
         // Update search path
         self.old_db
@@ -156,7 +156,7 @@ impl Test<'_> {
                 print_subheading("Applying second migration (expecting failure)");
                 let result = self
                     .reshape
-                    .migrate(vec![first_migration.clone(), second_migration.clone()]);
+                    .migrate(vec![first_migration.clone(), second_migration.clone()], Range::All);
 
                 if result.is_ok() {
                     panic!("expected second migration to fail");
@@ -164,7 +164,7 @@ impl Test<'_> {
             } else {
                 print_subheading("Applying second migration");
                 self.reshape
-                    .migrate(vec![first_migration.clone(), second_migration.clone()])
+                    .migrate(vec![first_migration.clone(), second_migration.clone()], Range::All)
                     .unwrap();
             }
 
@@ -192,7 +192,7 @@ impl Test<'_> {
                 }
                 RunType::Abort => {
                     print_subheading("Aborting");
-                    self.reshape.abort().unwrap();
+                    self.reshape.abort(Range::All).unwrap();
 
                     if let Some(after_abort_fn) = self.after_abort_fn {
                         print_subheading("Running post-abort checks");

@@ -1,10 +1,10 @@
-use std::{cmp::min, time::Duration};
+use std::{cmp::min, time::Duration, future::Future};
 
+use tokio_postgres::{types::ToSql, NoTls, Row, self as postgres};
 use anyhow::{anyhow, Context};
-use postgres::{types::ToSql, NoTls, Row};
 use rand::prelude::*;
 
-// DbLocker wraps a regular DbConn, only allowing access using the
+// Lock wraps a regular DbConn, only allowing access using the
 // `lock` method. This method will acquire the advisory lock before
 // allowing access to the database, and then release it afterwards.
 //
@@ -15,17 +15,21 @@ use rand::prelude::*;
 //
 // Postgres docs on advisory locks:
 //   https://www.postgresql.org/docs/current/explicit-locking.html#ADVISORY-LOCKS
-pub struct DbLocker {
-    client: DbConn,
+pub struct Lock {
+    client: Postgres,
 }
 
-impl DbLocker {
+impl Lock {
     // Advisory lock keys in Postgres are 64-bit integers.
     // The key we use was chosen randomly.
     const LOCK_KEY: i64 = 4036779288569897133;
 
-    pub fn connect(config: &postgres::Config) -> anyhow::Result<Self> {
-        let mut pg = config.connect(NoTls)?;
+    pub async fn connect(config: &postgres::Config) -> anyhow::Result<Self> {
+        let (pg, conn) = config.connect(NoTls).await?;
+
+        tokio::spawn(async move {
+            conn.await.unwrap();
+        });
 
         // When running DDL queries that acquire locks, we risk causing a "lock queue".
         // When attempting to acquire a lock, Postgres will wait for any long running queries to complete.
@@ -40,29 +44,30 @@ impl DbLocker {
         // Reference: https://medium.com/paypal-tech/postgresql-at-scale-database-schema-changes-without-downtime-20d3749ed680
         //
         // TODO: Make lock_timeout configurable
-        pg.simple_query("SET lock_timeout = '1s'")
+        pg.simple_query("SET lock_timeout = '1s'").await
             .context("failed to set lock_timeout")?;
 
         Ok(Self {
-            client: DbConn::new(pg),
+            client: Postgres::new(pg),
         })
     }
 
-    pub fn lock(
+    pub async fn lock(
         &mut self,
-        f: impl FnOnce(&mut DbConn) -> anyhow::Result<()>,
+        f: impl FnOnce(&mut Postgres) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
-        self.acquire_lock()?;
+        self.acquire_lock().await?;
         let result = f(&mut self.client);
-        self.release_lock()?;
+        self.release_lock().await?;
 
         result
     }
 
-    fn acquire_lock(&mut self) -> anyhow::Result<()> {
+    async fn acquire_lock(&mut self) -> anyhow::Result<()> {
         let success = self
             .client
-            .query(&format!("SELECT pg_try_advisory_lock({})", Self::LOCK_KEY))?
+            .query(&format!("SELECT pg_try_advisory_lock({})", Self::LOCK_KEY))
+            .await?
             .first()
             .ok_or_else(|| anyhow!("unexpectedly failed when acquiring advisory lock"))
             .map(|row| row.get::<'_, _, bool>(0))?;
@@ -74,58 +79,64 @@ impl DbLocker {
         }
     }
 
-    fn release_lock(&mut self) -> anyhow::Result<()> {
+    async fn release_lock(&mut self) -> anyhow::Result<()> {
         self.client
-            .query(&format!("SELECT pg_advisory_unlock({})", Self::LOCK_KEY))?
+            .query(&format!("SELECT pg_advisory_unlock({})", Self::LOCK_KEY))
+            .await?
             .first()
             .ok_or_else(|| anyhow!("unexpectedly failed when releasing advisory lock"))?;
         Ok(())
     }
 }
 
-pub trait Conn {
-    fn run(&mut self, query: &str) -> anyhow::Result<()>;
-    fn query(&mut self, query: &str) -> anyhow::Result<Vec<Row>>;
-    fn query_with_params(
+#[async_trait::async_trait]
+pub trait Connection: Send {
+    async fn run(&mut self, query: &str) -> anyhow::Result<()>;
+
+    async fn query(&mut self, query: &str) -> anyhow::Result<Vec<Row>>;
+
+    async fn query_with_params(
         &mut self,
         query: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> anyhow::Result<Vec<Row>>;
-    fn transaction(&mut self) -> anyhow::Result<Transaction>;
+
+    async fn transaction(&mut self) -> anyhow::Result<Transaction>;
 }
 
-pub struct DbConn {
+pub struct Postgres {
     client: postgres::Client,
 }
 
-impl DbConn {
+impl Postgres {
     fn new(client: postgres::Client) -> Self {
-        DbConn { client }
+        Postgres { client }
     }
 }
 
-impl Conn for DbConn {
-    fn run(&mut self, query: &str) -> anyhow::Result<()> {
-        retry_automatically(|| self.client.batch_execute(query))?;
+#[async_trait::async_trait]
+impl Connection for Postgres {
+    async fn run(&mut self, query: &str) -> anyhow::Result<()> {
+        retry_automatically(|| self.client.batch_execute(query)).await?;
         Ok(())
     }
 
-    fn query(&mut self, query: &str) -> anyhow::Result<Vec<Row>> {
-        let rows = retry_automatically(|| self.client.query(query, &[]))?;
+    async fn query(&mut self, query: &str) -> anyhow::Result<Vec<Row>> {
+        let rows = retry_automatically(|| self.client.query(query, &[])).await?;
         Ok(rows)
     }
 
-    fn query_with_params(
+    async fn query_with_params(
         &mut self,
         query: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> anyhow::Result<Vec<Row>> {
-        let rows = retry_automatically(|| self.client.query(query, params))?;
+        let rows = retry_automatically(|| self.client.query(query, params)).await?;
         Ok(rows)
     }
 
-    fn transaction(&mut self) -> anyhow::Result<Transaction> {
-        let transaction = self.client.transaction()?;
+    async fn transaction(&mut self) -> anyhow::Result<Transaction> {
+        let transaction = self.client.transaction().await?;
         Ok(Transaction { transaction })
     }
 }
@@ -135,55 +146,57 @@ pub struct Transaction<'a> {
 }
 
 impl Transaction<'_> {
-    pub fn commit(self) -> anyhow::Result<()> {
-        self.transaction.commit()?;
+    pub async fn commit(self) -> anyhow::Result<()> {
+        self.transaction.commit().await?;
         Ok(())
     }
 
-    pub fn rollback(self) -> anyhow::Result<()> {
-        self.transaction.rollback()?;
+    pub async fn rollback(self) -> anyhow::Result<()> {
+        self.transaction.rollback().await?;
         Ok(())
     }
 }
 
-impl Conn for Transaction<'_> {
-    fn run(&mut self, query: &str) -> anyhow::Result<()> {
-        self.transaction.batch_execute(query)?;
+#[async_trait::async_trait]
+impl Connection for Transaction<'_> {
+    async fn run(&mut self, query: &str) -> anyhow::Result<()> {
+        self.transaction.batch_execute(query).await?;
         Ok(())
     }
 
-    fn query(&mut self, query: &str) -> anyhow::Result<Vec<Row>> {
-        let rows = self.transaction.query(query, &[])?;
+    async fn query(&mut self, query: &str) -> anyhow::Result<Vec<Row>> {
+        let rows = self.transaction.query(query, &[]).await?;
         Ok(rows)
     }
 
-    fn query_with_params(
+    async fn query_with_params(
         &mut self,
         query: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> anyhow::Result<Vec<Row>> {
-        let rows = self.transaction.query(query, params)?;
+        let rows = self.transaction.query(query, params).await?;
         Ok(rows)
     }
 
-    fn transaction(&mut self) -> anyhow::Result<Transaction> {
-        let transaction = self.transaction.transaction()?;
+    async fn transaction(&mut self) -> anyhow::Result<Transaction> {
+        let transaction = self.transaction.transaction().await?;
         Ok(Transaction { transaction })
     }
 }
 
 // Retry a database operation with exponential backoff and jitter
-fn retry_automatically<T>(
-    mut f: impl FnMut() -> Result<T, postgres::Error>,
-) -> Result<T, postgres::Error> {
+async fn retry_automatically<T, F, Fut>(mut f: F) -> Result<T, postgres::Error> where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, postgres::Error>>
+{
     const STARTING_WAIT_TIME: u64 = 100;
     const MAX_WAIT_TIME: u64 = 3_200;
     const MAX_ATTEMPTS: u32 = 10;
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rngs::OsRng;
     let mut attempts = 0;
     loop {
-        let result = f();
+        let result = f().await;
 
         let error = match result {
             Ok(_) => return result,
@@ -213,7 +226,7 @@ fn retry_automatically<T>(
         // The jitter is up to half the wait time
         let jitter: u64 = rng.gen_range(0..wait_time / 2);
 
-        std::thread::sleep(Duration::from_millis(wait_time + jitter));
+        tokio::time::sleep(Duration::from_millis(wait_time + jitter)).await;
     }
 }
 

@@ -1,10 +1,13 @@
-use super::{Action, MigrationContext};
-use crate::{
-    db::{Conn, Transaction},
-    schema::Schema,
-};
-use anyhow::Context;
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+use anyhow::Context;
+
+use crate::{
+    db::{Connection, Transaction},
+    schema::Schema,
+    actions::{Action, MigrationContext},
+};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct CreateEnum {
@@ -12,16 +15,22 @@ pub struct CreateEnum {
     pub values: Vec<String>,
 }
 
-#[typetag::serde(name = "create_enum")]
-impl Action for CreateEnum {
-    fn describe(&self) -> String {
-        format!("Creating enum \"{}\"", self.name)
+impl fmt::Display for CreateEnum {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f,
+            "Creating enum \"{}\"",
+            self.name
+        )
     }
+}
 
-    fn run(
+#[typetag::serde(name = "create_enum")]
+#[async_trait::async_trait]
+impl Action for CreateEnum {
+    async fn run(
         &self,
         _ctx: &MigrationContext,
-        db: &mut dyn Conn,
+        db: &mut dyn Connection,
         _schema: &Schema,
     ) -> anyhow::Result<()> {
         // Check if enum already exists. CREATE TYPE doesn't have
@@ -35,7 +44,7 @@ impl Action for CreateEnum {
                 AND typname = '{name}'
                 ",
                 name = self.name,
-            ))?
+            )).await?
             .is_empty();
         if enum_exists {
             return Ok(());
@@ -53,29 +62,29 @@ impl Action for CreateEnum {
             "#,
             name = self.name,
             values = values_def.join(", "),
-        ))
+        )).await
         .context("failed to create enum")?;
 
         Ok(())
     }
 
-    fn complete<'a>(
+    async fn complete<'a>(
         &self,
         _ctx: &MigrationContext,
-        _db: &'a mut dyn Conn,
+        _db: &'a mut dyn Connection,
     ) -> anyhow::Result<Option<Transaction<'a>>> {
         Ok(None)
     }
 
     fn update_schema(&self, _ctx: &MigrationContext, _schema: &mut Schema) {}
 
-    fn abort(&self, _ctx: &MigrationContext, db: &mut dyn Conn) -> anyhow::Result<()> {
+    async fn abort(&self, _ctx: &MigrationContext, db: &mut dyn Connection) -> anyhow::Result<()> {
         db.run(&format!(
             r#"
             DROP TYPE IF EXISTS {name}
             "#,
             name = self.name,
-        ))
+        )).await
         .context("failed to drop enum")?;
 
         Ok(())

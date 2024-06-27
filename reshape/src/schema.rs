@@ -1,5 +1,6 @@
-use crate::db::Conn;
 use std::collections::{HashMap, HashSet};
+use anyhow::Context;
+use crate::db::Connection;
 
 // Schema tracks changes made to tables and columns during a migration.
 // These changes are not applied until the migration is completed but
@@ -155,35 +156,43 @@ pub struct Column {
 }
 
 impl Schema {
-    pub fn get_tables(&self, db: &mut dyn Conn) -> anyhow::Result<Vec<Table>> {
-        db.query(
+    pub async fn get_tables(&self, db: &mut dyn Connection) -> anyhow::Result<Vec<Table>> {
+        let rows = db.query(
             "
             SELECT table_name
             FROM information_schema.tables
             WHERE table_schema = 'public'
             ",
-        )?
-        .iter()
-        .map(|row| row.get::<'_, _, String>("table_name"))
-        .filter_map(|real_name| {
-            let table_changes = self
-                .table_changes
-                .iter()
-                .find(|changes| changes.real_name == real_name);
+        ).await?;
 
-            // Skip table if it has been removed
-            if let Some(changes) = table_changes {
-                if changes.removed {
-                    return None;
+        let names = rows
+            .iter()
+            .map(|row| row.get::<'_, _, String>("table_name"))
+            .filter_map(|real_name| {
+                let table_changes = self
+                    .table_changes
+                    .iter()
+                    .find(|changes| changes.real_name == real_name);
+
+                // Skip table if it has been removed
+                if let Some(changes) = table_changes {
+                    if changes.removed {
+                        return None;
+                    }
                 }
-            }
 
-            Some(self.get_table_by_real_name(db, &real_name))
-        })
-        .collect()
+                Some(real_name)
+            });
+
+        let mut tables = Vec::new();
+        for real_name in names {
+            tables.push(self.get_table_by_real_name(db, &real_name).await?);
+        }
+
+        Ok(tables)
     }
 
-    pub fn get_table(&self, db: &mut dyn Conn, table_name: &str) -> anyhow::Result<Table> {
+    pub async fn get_table(&self, db: &mut dyn Connection, table_name: &str) -> anyhow::Result<Table> {
         let table_changes = self
             .table_changes
             .iter()
@@ -193,12 +202,12 @@ impl Schema {
             .map(|changes| changes.real_name.to_string())
             .unwrap_or_else(|| table_name.to_string());
 
-        self.get_table_by_real_name(db, &real_table_name)
+        self.get_table_by_real_name(db, &real_table_name).await
     }
 
-    fn get_table_by_real_name(
+    async fn get_table_by_real_name(
         &self,
-        db: &mut dyn Conn,
+        db: &mut dyn Connection,
         real_table_name: &str,
     ) -> anyhow::Result<Table> {
         let table_changes = self
@@ -215,7 +224,7 @@ impl Schema {
                 ORDER BY ordinal_position
                 ",
                 table = real_table_name,
-            ))?
+            )).await?
             .iter()
             .map(|row| {
                 (
@@ -302,4 +311,29 @@ impl Table {
     pub fn get_column(&self, name: &str) -> Option<&Column> {
         self.columns.iter().find(|column| column.name == name)
     }
+}
+
+pub async fn create_new_schema_func(db: &mut dyn Connection, target_migration: &str) -> anyhow::Result<()> {
+    let query = format!(
+        "
+			CREATE OR REPLACE FUNCTION reshape.is_new_schema()
+			RETURNS BOOLEAN AS $$
+            DECLARE
+                setting TEXT := current_setting('reshape.is_new_schema', TRUE);
+                setting_bool BOOLEAN := setting IS NOT NULL AND setting = 'YES';
+			BEGIN
+				RETURN current_setting('search_path') = 'migration_{}' OR setting_bool;
+			END
+			$$ language 'plpgsql';
+        ",
+        target_migration,
+    );
+    db.query(&query).await.context("failed creating helper function reshape.is_new_schema()")?;
+
+    Ok(())
+}
+
+pub async fn drop_new_schema_func(db: &mut dyn Connection) -> anyhow::Result<()> {
+    db.query("DROP FUNCTION IF EXISTS reshape.is_new_schema;").await?;
+    Ok(())
 }

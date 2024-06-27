@@ -1,35 +1,44 @@
-use super::{Action, MigrationContext};
-use crate::{
-    db::{Conn, Transaction},
-    schema::Schema,
-};
-use anyhow::Context;
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+use anyhow::Context;
+
+use crate::{
+    db::{Connection, Transaction},
+    schema::Schema,
+    actions::{Action, MigrationContext},
+};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RemoveTable {
     pub table: String,
 }
 
-#[typetag::serde(name = "remove_table")]
-impl Action for RemoveTable {
-    fn describe(&self) -> String {
-        format!("Removing table \"{}\"", self.table)
+impl fmt::Display for RemoveTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f,
+            "Removing table \"{}\"",
+            self.table
+        )
     }
+}
 
-    fn run(
+#[typetag::serde(name = "remove_table")]
+#[async_trait::async_trait]
+impl Action for RemoveTable {
+    async fn run(
         &self,
         _ctx: &MigrationContext,
-        _db: &mut dyn Conn,
+        _db: &mut dyn Connection,
         _schema: &Schema,
     ) -> anyhow::Result<()> {
         Ok(())
     }
 
-    fn complete<'a>(
+    async fn complete<'a>(
         &self,
         _ctx: &MigrationContext,
-        db: &'a mut dyn Conn,
+        db: &'a mut dyn Connection,
     ) -> anyhow::Result<Option<Transaction<'a>>> {
         // Remove table
         let query = format!(
@@ -38,7 +47,7 @@ impl Action for RemoveTable {
             "#,
             table = self.table,
         );
-        db.run(&query).context("failed to drop table")?;
+        db.run(&query).await.context("failed to drop table")?;
 
         Ok(None)
     }
@@ -49,7 +58,7 @@ impl Action for RemoveTable {
         });
     }
 
-    fn abort(&self, _ctx: &MigrationContext, _db: &mut dyn Conn) -> anyhow::Result<()> {
+    async fn abort(&self, _ctx: &MigrationContext, _db: &mut dyn Connection) -> anyhow::Result<()> {
         Ok(())
     }
 }

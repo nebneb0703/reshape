@@ -1,43 +1,52 @@
-use super::{Action, MigrationContext};
-use crate::{
-    db::{Conn, Transaction},
-    schema::Schema,
-};
-use anyhow::Context;
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+use anyhow::Context;
+
+use crate::{
+    db::{Connection, Transaction},
+    schema::Schema,
+    actions::{Action, MigrationContext},
+};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RemoveIndex {
     pub index: String,
 }
 
-#[typetag::serde(name = "remove_index")]
-impl Action for RemoveIndex {
-    fn describe(&self) -> String {
-        format!("Removing index \"{}\"", self.index)
+impl fmt::Display for RemoveIndex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f,
+            "Removing index \"{}\"",
+            self.index
+        )
     }
+}
 
-    fn run(
+#[typetag::serde(name = "remove_index")]
+#[async_trait::async_trait]
+impl Action for RemoveIndex {
+    async fn run(
         &self,
         _ctx: &MigrationContext,
-        _db: &mut dyn Conn,
+        _db: &mut dyn Connection,
         _schema: &Schema,
     ) -> anyhow::Result<()> {
         // Do nothing, the index isn't removed until completion
         Ok(())
     }
 
-    fn complete<'a>(
+    async fn complete<'a>(
         &self,
         _ctx: &MigrationContext,
-        db: &'a mut dyn Conn,
+        db: &'a mut dyn Connection,
     ) -> anyhow::Result<Option<Transaction<'a>>> {
         db.run(&format!(
             r#"
             DROP INDEX CONCURRENTLY IF EXISTS "{name}"
             "#,
             name = self.index
-        ))
+        )).await
         .context("failed to drop index")?;
 
         Ok(None)
@@ -45,7 +54,7 @@ impl Action for RemoveIndex {
 
     fn update_schema(&self, _ctx: &MigrationContext, _schema: &mut Schema) {}
 
-    fn abort(&self, _ctx: &MigrationContext, _db: &mut dyn Conn) -> anyhow::Result<()> {
+    async fn abort(&self, _ctx: &MigrationContext, _db: &mut dyn Connection) -> anyhow::Result<()> {
         Ok(())
     }
 }

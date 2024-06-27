@@ -1,10 +1,13 @@
-use super::{common, Action, Column, MigrationContext};
-use crate::{
-    db::{Conn, Transaction},
-    schema::Schema,
-};
-use anyhow::{bail, Context};
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+use anyhow::{bail, Context};
+
+use crate::{
+    db::{Connection, Transaction},
+    schema::Schema,
+    actions::{Action, MigrationContext, common, Column},
+};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AddColumn {
@@ -24,60 +27,26 @@ pub enum Transformation {
     },
 }
 
-impl AddColumn {
-    fn temp_column_name(&self, ctx: &MigrationContext) -> String {
-        format!(
-            "{}_temp_column_{}_{}",
-            ctx.prefix(),
-            self.table,
+impl fmt::Display for AddColumn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f,
+            "Adding column \"{}\" to \"{}\"",
             self.column.name,
-        )
-    }
-
-    fn trigger_name(&self, ctx: &MigrationContext) -> String {
-        format!(
-            "{}_add_column_{}_{}",
-            ctx.prefix(),
-            self.table,
-            self.column.name
-        )
-    }
-
-    fn reverse_trigger_name(&self, ctx: &MigrationContext) -> String {
-        format!(
-            "{}_add_column_{}_{}_rev",
-            ctx.prefix(),
-            self.table,
-            self.column.name
-        )
-    }
-
-    fn not_null_constraint_name(&self, ctx: &MigrationContext) -> String {
-        format!(
-            "{}_add_column_not_null_{}_{}",
-            ctx.prefix(),
-            self.table,
-            self.column.name
+            self.table
         )
     }
 }
 
 #[typetag::serde(name = "add_column")]
+#[async_trait::async_trait]
 impl Action for AddColumn {
-    fn describe(&self) -> String {
-        format!(
-            "Adding column \"{}\" to \"{}\"",
-            self.column.name, self.table
-        )
-    }
-
-    fn run(
+    async fn run(
         &self,
         ctx: &MigrationContext,
-        db: &mut dyn Conn,
+        db: &mut dyn Connection,
         schema: &Schema,
     ) -> anyhow::Result<()> {
-        let table = schema.get_table(db, &self.table)?;
+        let table = schema.get_table(db, &self.table).await?;
         let temp_column_name = self.temp_column_name(ctx);
 
         let mut definition_parts = vec![
@@ -104,7 +73,7 @@ impl Action for AddColumn {
             table = self.table,
             definition = definition_parts.join(" "),
         );
-        db.run(&query).context("failed to add column")?;
+        db.run(&query).await.context("failed to add column")?;
 
         let declarations: Vec<String> = table
             .columns
@@ -147,11 +116,11 @@ impl Action for AddColumn {
                     table = self.table,
                     declarations = declarations.join("\n"),
                 );
-                db.run(&query).context("failed to create up trigger")?;
+                db.run(&query).await.context("failed to create up trigger")?;
 
                 // Backfill values in batches
                 common::batch_touch_rows(db, &table.real_name, Some(&temp_column_name))
-                    .context("failed to batch update existing rows")?;
+                    .await.context("failed to batch update existing rows")?;
             }
 
             if let Transformation::Update {
@@ -165,7 +134,7 @@ impl Action for AddColumn {
                     None => bail!("can't use update without previous migration"),
                 };
 
-                let from_table = schema.get_table(db, &from_table)?;
+                let from_table = schema.get_table(db, &from_table).await?;
 
                 let from_table_assignments: Vec<String> = from_table
                     .columns
@@ -218,7 +187,7 @@ impl Action for AddColumn {
                     // declarations = from_table_declarations.join("\n"),
                     temp_column_name = temp_column_name,
                 );
-                db.run(&query).context("failed to create up trigger")?;
+                db.run(&query).await.context("failed to create up trigger")?;
 
                 let from_table_columns = from_table
                     .columns
@@ -282,12 +251,11 @@ impl Action for AddColumn {
                     temp_column_name = temp_column_name,
                     // declarations = declarations.join("\n"),
                 );
-                db.run(&query)
-                    .context("failed to create reverse up trigger")?;
+                db.run(&query).await.context("failed to create reverse up trigger")?;
 
                 // Backfill values in batches by touching the from table
                 common::batch_touch_rows(db, &from_table.real_name, None)
-                    .context("failed to batch update existing rows")?;
+                    .await.context("failed to batch update existing rows")?;
             }
         }
 
@@ -311,19 +279,18 @@ impl Action for AddColumn {
 
             println!("DEBUG: {query}");
 
-            db.run(&query)
-                .context("failed to add NOT NULL constraint")?;
+            db.run(&query).await.context("failed to add NOT NULL constraint")?;
         }
 
         Ok(())
     }
 
-    fn complete<'a>(
+    async fn complete<'a>(
         &self,
         ctx: &MigrationContext,
-        db: &'a mut dyn Conn,
+        db: &'a mut dyn Connection,
     ) -> anyhow::Result<Option<Transaction<'a>>> {
-        let mut transaction = db.transaction().context("failed to create transaction")?;
+        let mut transaction = db.transaction().await.context("failed to create transaction")?;
 
         // Remove triggers and procedures
         let query = format!(
@@ -334,9 +301,7 @@ impl Action for AddColumn {
             trigger_name = self.trigger_name(ctx),
             reverse_trigger_name = self.reverse_trigger_name(ctx),
         );
-        transaction
-            .run(&query)
-            .context("failed to drop up trigger")?;
+        transaction.run(&query).await.context("failed to drop up trigger")?;
 
         // Update column to be NOT NULL if necessary
         if !self.column.nullable {
@@ -350,9 +315,7 @@ impl Action for AddColumn {
                 table = self.table,
                 constraint_name = self.not_null_constraint_name(ctx),
             );
-            transaction
-                .run(&query)
-                .context("failed to validate NOT NULL constraint")?;
+            transaction.run(&query).await.context("failed to validate NOT NULL constraint")?;
 
             // Update the column to be NOT NULL.
             // This requires an exclusive lock but since PG 12 it can check
@@ -366,9 +329,7 @@ impl Action for AddColumn {
                 table = self.table,
                 column = self.temp_column_name(ctx),
             );
-            transaction
-                .run(&query)
-                .context("failed to set column as NOT NULL")?;
+            transaction.run(&query).await.context("failed to set column as NOT NULL")?;
 
             // Drop the temporary constraint
             let query = format!(
@@ -379,9 +340,7 @@ impl Action for AddColumn {
                 table = self.table,
                 constraint_name = self.not_null_constraint_name(ctx),
             );
-            transaction
-                .run(&query)
-                .context("failed to drop NOT NULL constraint")?;
+            transaction.run(&query).await.context("failed to drop NOT NULL constraint")?;
         }
 
         // Rename the temporary column to its real name
@@ -394,7 +353,7 @@ impl Action for AddColumn {
                 table = self.table,
                 temp_column_name = self.temp_column_name(ctx),
                 column_name = self.column.name,
-            ))
+            )).await
             .context("failed to rename column to final name")?;
 
         Ok(Some(transaction))
@@ -408,7 +367,7 @@ impl Action for AddColumn {
         });
     }
 
-    fn abort(&self, ctx: &MigrationContext, db: &mut dyn Conn) -> anyhow::Result<()> {
+    async fn abort(&self, ctx: &MigrationContext, db: &mut dyn Connection) -> anyhow::Result<()> {
         // Remove column
         let query = format!(
             r#"
@@ -418,7 +377,7 @@ impl Action for AddColumn {
             table = self.table,
             column = self.temp_column_name(ctx),
         );
-        db.run(&query).context("failed to drop column")?;
+        db.run(&query).await.context("failed to drop column")?;
 
         // Remove triggers and procedures
         let query = format!(
@@ -429,8 +388,46 @@ impl Action for AddColumn {
             trigger_name = self.trigger_name(ctx),
             reverse_trigger_name = self.reverse_trigger_name(ctx),
         );
-        db.run(&query).context("failed to drop up trigger")?;
+        db.run(&query).await.context("failed to drop up trigger")?;
 
         Ok(())
+    }
+}
+
+impl AddColumn {
+    fn temp_column_name(&self, ctx: &MigrationContext) -> String {
+        format!(
+            "{}_temp_column_{}_{}",
+            ctx.prefix(),
+            self.table,
+            self.column.name,
+        )
+    }
+
+    fn trigger_name(&self, ctx: &MigrationContext) -> String {
+        format!(
+            "{}_add_column_{}_{}",
+            ctx.prefix(),
+            self.table,
+            self.column.name
+        )
+    }
+
+    fn reverse_trigger_name(&self, ctx: &MigrationContext) -> String {
+        format!(
+            "{}_add_column_{}_{}_rev",
+            ctx.prefix(),
+            self.table,
+            self.column.name
+        )
+    }
+
+    fn not_null_constraint_name(&self, ctx: &MigrationContext) -> String {
+        format!(
+            "{}_add_column_not_null_{}_{}",
+            ctx.prefix(),
+            self.table,
+            self.column.name
+        )
     }
 }

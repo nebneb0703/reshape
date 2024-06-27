@@ -1,10 +1,13 @@
-use super::{common::ForeignKey, Action, MigrationContext};
-use crate::{
-    db::{Conn, Transaction},
-    schema::Schema,
-};
-use anyhow::Context;
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+use anyhow::Context;
+
+use crate::{
+    db::{Connection, Transaction},
+    schema::Schema,
+    actions::{Action, common::ForeignKey, MigrationContext},
+};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AddForeignKey {
@@ -12,23 +15,27 @@ pub struct AddForeignKey {
     foreign_key: ForeignKey,
 }
 
-#[typetag::serde(name = "add_foreign_key")]
-impl Action for AddForeignKey {
-    fn describe(&self) -> String {
-        format!(
+impl fmt::Display for AddForeignKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f,
             "Adding foreign key from table \"{}\" to \"{}\"",
-            self.table, self.foreign_key.referenced_table
+            self.table,
+            self.foreign_key.referenced_table
         )
     }
+}
 
-    fn run(
+#[typetag::serde(name = "add_foreign_key")]
+#[async_trait::async_trait]
+impl Action for AddForeignKey {
+    async fn run(
         &self,
         ctx: &MigrationContext,
-        db: &mut dyn Conn,
+        db: &mut dyn Connection,
         schema: &Schema,
     ) -> anyhow::Result<()> {
-        let table = schema.get_table(db, &self.table)?;
-        let referenced_table = schema.get_table(db, &self.foreign_key.referenced_table)?;
+        let table = schema.get_table(db, &self.table).await?;
+        let referenced_table = schema.get_table(db, &self.foreign_key.referenced_table).await?;
 
         // Add quotes around all column names
         let columns: Vec<String> = table
@@ -56,7 +63,7 @@ impl Action for AddForeignKey {
             columns = columns.join(", "),
             referenced_table = referenced_table.real_name,
             referenced_columns = referenced_columns.join(", "),
-        ))
+        )).await
         .context("failed to create foreign key")?;
 
         db.run(&format!(
@@ -66,16 +73,16 @@ impl Action for AddForeignKey {
             "#,
             table = table.real_name,
             constraint_name = self.temp_constraint_name(ctx),
-        ))
+        )).await
         .context("failed to validate foreign key")?;
 
         Ok(())
     }
 
-    fn complete<'a>(
+    async fn complete<'a>(
         &self,
         ctx: &MigrationContext,
-        db: &'a mut dyn Conn,
+        db: &'a mut dyn Connection,
     ) -> anyhow::Result<Option<Transaction<'a>>> {
         db.run(&format!(
             r#"
@@ -85,14 +92,14 @@ impl Action for AddForeignKey {
             table = self.table,
             temp_constraint_name = self.temp_constraint_name(ctx),
             constraint_name = self.final_constraint_name(),
-        ))
+        )).await
         .context("failed to rename temporary constraint")?;
         Ok(None)
     }
 
     fn update_schema(&self, _ctx: &MigrationContext, _schema: &mut Schema) {}
 
-    fn abort(&self, ctx: &MigrationContext, db: &mut dyn Conn) -> anyhow::Result<()> {
+    async fn abort(&self, ctx: &MigrationContext, db: &mut dyn Connection) -> anyhow::Result<()> {
         db.run(&format!(
             r#"
             ALTER TABLE "{table}"
@@ -100,7 +107,7 @@ impl Action for AddForeignKey {
             "#,
             table = self.table,
             constraint_name = self.temp_constraint_name(ctx),
-        ))
+        )).await
         .context("failed to validate foreign key")?;
 
         Ok(())

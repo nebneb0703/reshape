@@ -1,11 +1,13 @@
-use super::{Action, MigrationContext};
-use crate::{
-    db::{Conn, Transaction},
-    migrations::common,
-    schema::Schema,
-};
-use anyhow::{anyhow, Context};
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+use anyhow::{anyhow, Context};
+
+use crate::{
+    db::{Connection, Transaction},
+    schema::Schema,
+    actions::{Action, MigrationContext, common},
+};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AlterColumn {
@@ -26,16 +28,23 @@ pub struct ColumnChanges {
     pub default: Option<String>,
 }
 
-#[typetag::serde(name = "alter_column")]
-impl Action for AlterColumn {
-    fn describe(&self) -> String {
-        format!("Altering column \"{}\" on \"{}\"", self.column, self.table)
+impl fmt::Display for AlterColumn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f,
+            "Altering column \"{}\" on \"{}\"",
+            self.column,
+            self.table
+        )
     }
+}
 
-    fn run(
+#[typetag::serde(name = "alter_column")]
+#[async_trait::async_trait]
+impl Action for AlterColumn {
+    async fn run(
         &self,
         ctx: &MigrationContext,
-        db: &mut dyn Conn,
+        db: &mut dyn Connection,
         schema: &Schema,
     ) -> anyhow::Result<()> {
         // If we are only changing the name of a column, we don't have to do anything at this stage
@@ -45,7 +54,7 @@ impl Action for AlterColumn {
             return Ok(());
         }
 
-        let table = schema.get_table(db, &self.table)?;
+        let table = schema.get_table(db, &self.table).await?;
 
         let column = table
             .get_column(&self.column)
@@ -80,7 +89,7 @@ impl Action for AlterColumn {
 
         println!("DEBUG: {query}");
 
-        db.run(&query).context("failed to add temporary column")?;
+        db.run(&query).await.context("failed to add temporary column")?;
 
         // If up or down wasn't provided, we default to simply moving the value over.
         // This is the correct behaviour for example when only changing the default value.
@@ -149,17 +158,16 @@ impl Action for AlterColumn {
             down_trigger = self.down_trigger_name(ctx),
             declarations = declarations.join("\n"),
         );
-        db.run(&query)
-            .context("failed to create up and down triggers")?;
+        db.run(&query).await.context("failed to create up and down triggers")?;
 
         // Backfill values in batches by touching the previous column
         common::batch_touch_rows(db, &table.real_name, Some(&column.real_name))
-            .context("failed to batch update existing rows")?;
+            .await.context("failed to batch update existing rows")?;
 
         // Duplicate any indices to the temporary column
-        let indices = common::get_indices_for_column(db, &table.real_name, &column.real_name)?;
+        let indices = common::get_indices_for_column(db, &table.real_name, &column.real_name).await?;
         for index in indices {
-            let index_columns: Vec<String> = common::get_index_columns(db, &index.name)?
+            let index_columns: Vec<String> = common::get_index_columns(db, &index.name).await?
                 .into_iter()
                 .map(|idx_column| {
                     // Replace column with temporary column for new index
@@ -182,7 +190,7 @@ impl Action for AlterColumn {
                 table = table.real_name,
                 columns = index_columns.join(", "),
                 index_type = index.index_type,
-            ))
+            )).await
             .context("failed to create temporary index")?;
         }
 
@@ -201,17 +209,16 @@ impl Action for AlterColumn {
                 constraint_name = self.not_null_constraint_name(ctx),
                 column = self.temporary_column_name(ctx),
             );
-            db.run(&query)
-                .context("failed to add NOT NULL constraint")?;
+            db.run(&query).await.context("failed to add NOT NULL constraint")?;
         }
 
         Ok(())
     }
 
-    fn complete<'a>(
+    async fn complete<'a>(
         &self,
         ctx: &MigrationContext,
-        db: &'a mut dyn Conn,
+        db: &'a mut dyn Connection,
     ) -> anyhow::Result<Option<Transaction<'a>>> {
         if self.can_short_circuit() {
             if let Some(new_name) = &self.changes.name {
@@ -224,7 +231,7 @@ impl Action for AlterColumn {
                     existing_name = self.column,
                     new_name = new_name,
                 );
-                db.run(&query).context("failed to rename column")?;
+                db.run(&query).await.context("failed to rename column")?;
             }
             return Ok(None);
         }
@@ -238,7 +245,7 @@ impl Action for AlterColumn {
                 WHERE constraint_name = $1
                 ",
                 &[&self.not_null_constraint_name(ctx)],
-            )
+            ).await
             .context("failed to get any NOT NULL constraint")?
             .is_empty();
         if has_not_null_constraint {
@@ -252,8 +259,7 @@ impl Action for AlterColumn {
                 table = self.table,
                 constraint_name = self.not_null_constraint_name(ctx),
             );
-            db.run(&query)
-                .context("failed to validate NOT NULL constraint")?;
+            db.run(&query).await.context("failed to validate NOT NULL constraint")?;
 
             // Update the column to be NOT NULL.
             // This requires an exclusive lock but since PG 12 it can check
@@ -267,7 +273,7 @@ impl Action for AlterColumn {
                 table = self.table,
                 column = self.temporary_column_name(ctx),
             );
-            db.run(&query).context("failed to set column as NOT NULL")?;
+            db.run(&query).await.context("failed to set column as NOT NULL")?;
 
             // Drop the temporary constraint
             let query = format!(
@@ -278,12 +284,11 @@ impl Action for AlterColumn {
                 table = self.table,
                 constraint_name = self.not_null_constraint_name(ctx),
             );
-            db.run(&query)
-                .context("failed to drop NOT NULL constraint")?;
+            db.run(&query).await.context("failed to drop NOT NULL constraint")?;
         }
 
         // Replace old indices with the new temporary ones created for the temporary column
-        let indices = common::get_indices_for_column(db, &self.table, &self.column)?;
+        let indices = common::get_indices_for_column(db, &self.table, &self.column).await?;
         for current_index in indices {
             // To keep the index handling idempotent, we need to do the following:
             // 1. Add a prefix to the existing index
@@ -300,7 +305,7 @@ impl Action for AlterColumn {
                 "#,
                 current_name = target_index_name,
                 new_name = old_index_name,
-            ))
+            )).await
             .context("failed to rename old index")?;
 
             // Rename temporary index to real name
@@ -311,7 +316,7 @@ impl Action for AlterColumn {
                 "#,
                 temp_index_name = temp_index_name,
                 target_index_name = target_index_name,
-            ))
+            )).await
             .context("failed to rename temporary index")?;
 
             // Drop old index concurrently
@@ -320,7 +325,7 @@ impl Action for AlterColumn {
                 DROP INDEX CONCURRENTLY IF EXISTS "{old_index_name}"
                 "#,
                 old_index_name = old_index_name,
-            ))
+            )).await
             .context("failed to drop old index")?;
         }
 
@@ -332,7 +337,7 @@ impl Action for AlterColumn {
             table = self.table,
             column = self.column,
         );
-        db.run(&query).context("failed to drop old column")?;
+        db.run(&query).await.context("failed to drop old column")?;
 
         // Rename temporary column
         let column_name = self.changes.name.as_deref().unwrap_or(&self.column);
@@ -344,8 +349,7 @@ impl Action for AlterColumn {
             temp_column = self.temporary_column_name(ctx),
             name = column_name,
         );
-        db.run(&query)
-            .context("failed to rename temporary column")?;
+        db.run(&query).await.context("failed to rename temporary column")?;
 
         // Remove triggers and procedures
         let query = format!(
@@ -360,8 +364,7 @@ impl Action for AlterColumn {
             up_trigger = self.up_trigger_name(ctx),
             down_trigger = self.down_trigger_name(ctx),
         );
-        db.run(&query)
-            .context("failed to drop up and down triggers")?;
+        db.run(&query).await.context("failed to drop up and down triggers")?;
 
         Ok(None)
     }
@@ -388,10 +391,10 @@ impl Action for AlterColumn {
         });
     }
 
-    fn abort(&self, ctx: &MigrationContext, db: &mut dyn Conn) -> anyhow::Result<()> {
+    async fn abort(&self, ctx: &MigrationContext, db: &mut dyn Connection) -> anyhow::Result<()> {
         // Safely remove any indices created for the temporary column
         let temp_column_name = self.temporary_column_name(ctx);
-        let indices = common::get_indices_for_column(db, &self.table, &temp_column_name)?;
+        let indices = common::get_indices_for_column(db, &self.table, &temp_column_name).await?;
         for index in indices {
             let temp_index_name = self.temp_index_name(ctx, index.oid);
             db.query(&format!(
@@ -399,7 +402,7 @@ impl Action for AlterColumn {
                 DROP INDEX CONCURRENTLY IF EXISTS "{index_name}"
                 "#,
                 index_name = temp_index_name,
-            ))?;
+            )).await?;
         }
 
         // Drop temporary column
@@ -411,7 +414,7 @@ impl Action for AlterColumn {
             table = self.table,
             temp_column = self.temporary_column_name(ctx),
         );
-        db.run(&query).context("failed to drop temporary column")?;
+        db.run(&query).await.context("failed to drop temporary column")?;
 
         // Remove triggers and procedures
         let query = format!(
@@ -426,8 +429,7 @@ impl Action for AlterColumn {
             up_trigger = self.up_trigger_name(ctx),
             down_trigger = self.down_trigger_name(ctx),
         );
-        db.run(&query)
-            .context("failed to drop up and down triggers")?;
+        db.run(&query).await.context("failed to drop up and down triggers")?;
 
         Ok(())
     }

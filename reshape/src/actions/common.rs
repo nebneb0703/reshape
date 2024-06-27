@@ -1,8 +1,11 @@
 use anyhow::anyhow;
-use postgres::types::{FromSql, ToSql};
+use tokio_postgres::types::{
+    FromSql, ToSql, Type, private::BytesMut,
+    IsNull, to_sql_checked,
+};
 use serde::{Deserialize, Serialize};
 
-use crate::db::Conn;
+use crate::db::Connection;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Column {
@@ -33,7 +36,7 @@ struct PostgresRawValue {
 
 impl<'a> FromSql<'a> for PostgresRawValue {
     fn from_sql(
-        _ty: &postgres::types::Type,
+        _ty: &Type,
         raw: &'a [u8],
     ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
         Ok(PostgresRawValue {
@@ -41,7 +44,7 @@ impl<'a> FromSql<'a> for PostgresRawValue {
         })
     }
 
-    fn accepts(_ty: &postgres::types::Type) -> bool {
+    fn accepts(_ty: &Type) -> bool {
         true
     }
 }
@@ -49,28 +52,28 @@ impl<'a> FromSql<'a> for PostgresRawValue {
 impl ToSql for PostgresRawValue {
     fn to_sql(
         &self,
-        _ty: &postgres::types::Type,
-        out: &mut postgres::types::private::BytesMut,
-    ) -> Result<postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>>
+        _ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>>
     where
         Self: Sized,
     {
         out.extend_from_slice(&self.bytes);
-        Ok(postgres::types::IsNull::No)
+        Ok(IsNull::No)
     }
 
-    fn accepts(_ty: &postgres::types::Type) -> bool
+    fn accepts(_ty: &Type) -> bool
     where
         Self: Sized,
     {
         true
     }
 
-    postgres::types::to_sql_checked!();
+    to_sql_checked!();
 }
 
-pub fn batch_touch_rows(
-    db: &mut dyn Conn,
+pub async fn batch_touch_rows(
+    db: &mut dyn Connection,
     table: &str,
     column: Option<&str>,
 ) -> anyhow::Result<()> {
@@ -81,7 +84,7 @@ pub fn batch_touch_rows(
     loop {
         let mut params: Vec<&(dyn ToSql + Sync)> = Vec::new();
 
-        let primary_key = get_primary_key_columns_for_table(db, table)?;
+        let primary_key = get_primary_key_columns_for_table(db, table).await?;
 
         // If no column to touch is passed, we default to the first primary key column (just to make some "update")
         let touched_column = match column {
@@ -144,7 +147,7 @@ pub fn batch_touch_rows(
             batch_size = BATCH_SIZE,
         );
         let last_value = db
-            .query_with_params(&query, &params)?
+            .query_with_params(&query, &params).await?
             .first()
             .and_then(|row| row.get("last_value"));
 
@@ -158,8 +161,8 @@ pub fn batch_touch_rows(
     Ok(())
 }
 
-fn get_primary_key_columns_for_table(
-    db: &mut dyn Conn,
+async fn get_primary_key_columns_for_table(
+    db: &mut dyn Connection,
     table: &str,
 ) -> anyhow::Result<Vec<String>> {
     // Query from https://wiki.postgresql.org/wiki/Retrieve_primary_key_columns
@@ -173,7 +176,7 @@ fn get_primary_key_columns_for_table(
             AND    i.indisprimary;
             ",
             table = table
-        ))?
+        )).await?
         .iter()
         .map(|row| row.get("column_name"))
         .collect();
@@ -188,8 +191,8 @@ pub struct Index {
     pub index_type: String,
 }
 
-pub fn get_indices_for_column(
-    db: &mut dyn Conn,
+pub async fn get_indices_for_column(
+    db: &mut dyn Connection,
     table: &str,
     column: &str,
 ) -> anyhow::Result<Vec<Index>> {
@@ -214,7 +217,7 @@ pub fn get_indices_for_column(
             ",
             table = table,
             column = column,
-        ))?
+        )).await?
         .iter()
         .map(|row| Index {
             name: row.get("name"),
@@ -227,7 +230,7 @@ pub fn get_indices_for_column(
     Ok(indices)
 }
 
-pub fn get_index_columns(db: &mut dyn Conn, index_name: &str) -> anyhow::Result<Vec<String>> {
+pub async fn get_index_columns(db: &mut dyn Connection, index_name: &str) -> anyhow::Result<Vec<String>> {
     // Get all columns which are part of the index in order
     let (table_oid, column_nums) = db
         .query(&format!(
@@ -240,7 +243,7 @@ pub fn get_index_columns(db: &mut dyn Conn, index_name: &str) -> anyhow::Result<
 	            i.relname = '{index_name}'
             ",
             index_name = index_name,
-        ))?
+        )).await?
         .first()
         .map(|row| {
             (
@@ -251,25 +254,26 @@ pub fn get_index_columns(db: &mut dyn Conn, index_name: &str) -> anyhow::Result<
         .ok_or_else(|| anyhow!("failed to get columns for index"))?;
 
     // Get the name of each of the columns, still in order
-    column_nums
-        .iter()
-        .map(|column_num| -> anyhow::Result<String> {
-            let name: String = db
-                .query(&format!(
-                    "
-                    SELECT attname AS name
-                    FROM pg_attribute
-                    WHERE attrelid = {table_oid}
-                        AND attnum = {column_num};
-                    ",
-                    table_oid = table_oid,
-                    column_num = column_num,
-                ))?
-                .first()
-                .map(|row| row.get("name"))
-                .ok_or_else(|| anyhow!("expected to find column"))?;
 
-            Ok(name)
-        })
-        .collect::<anyhow::Result<Vec<String>>>()
+    let mut names = Vec::with_capacity(column_nums.len());
+
+    for column_num in column_nums {
+        let name = db.query(&format!(
+            "
+            SELECT attname AS name
+            FROM pg_attribute
+            WHERE attrelid = {table_oid}
+                AND attnum = {column_num};
+            ",
+            table_oid = table_oid,
+            column_num = column_num,
+        )).await?
+        .first()
+        .map(|row| row.get("name"))
+        .ok_or_else(|| anyhow!("expected to find column"))?;
+
+        names.push(name);
+   }
+
+   Ok(names)
 }

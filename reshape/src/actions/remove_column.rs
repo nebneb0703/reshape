@@ -1,10 +1,13 @@
-use super::{common, Action, MigrationContext};
-use crate::{
-    db::{Conn, Transaction},
-    schema::Schema,
-};
-use anyhow::{anyhow, bail, Context};
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+use anyhow::{anyhow, bail, Context};
+
+use crate::{
+    db::{Connection, Transaction},
+    schema::Schema,
+    actions::{Action, MigrationContext, common},
+};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RemoveColumn {
@@ -24,60 +27,27 @@ pub enum Transformation {
     },
 }
 
-impl RemoveColumn {
-    fn trigger_name(&self, ctx: &MigrationContext) -> String {
-        format!(
-            "{}_remove_column_{}_{}",
-            ctx.prefix(),
-            self.table,
-            self.column
-        )
-    }
-
-    fn reverse_trigger_name(&self, ctx: &MigrationContext) -> String {
-        format!(
-            "{}_remove_column_{}_{}_rev",
-            ctx.prefix(),
-            self.table,
-            self.column
-        )
-    }
-
-    fn not_null_constraint_trigger_name(&self, ctx: &MigrationContext) -> String {
-        format!(
-            "{}_remove_column_{}_{}_nn",
-            ctx.prefix(),
-            self.table,
-            self.column
-        )
-    }
-
-    fn not_null_constraint_name(&self, ctx: &MigrationContext) -> String {
-        format!(
-            "{}_add_column_not_null_{}_{}",
-            ctx.prefix(),
-            self.table,
-            self.column
+impl fmt::Display for RemoveColumn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f,
+            "Removing column \"{}\" from \"{}\"",
+            self.column,
+            self.table
         )
     }
 }
 
-#[typetag::serde(name = "remove_column")]
-impl Action for RemoveColumn {
-    fn describe(&self) -> String {
-        format!(
-            "Removing column \"{}\" from \"{}\"",
-            self.column, self.table
-        )
-    }
 
-    fn run(
+#[typetag::serde(name = "remove_column")]
+#[async_trait::async_trait]
+impl Action for RemoveColumn {
+    async fn run(
         &self,
         ctx: &MigrationContext,
-        db: &mut dyn Conn,
+        db: &mut dyn Connection,
         schema: &Schema,
     ) -> anyhow::Result<()> {
-        let table = schema.get_table(db, &self.table)?;
+        let table = schema.get_table(db, &self.table).await?;
         let column = table
             .get_column(&self.column)
             .ok_or_else(|| anyhow!("no such column {} exists", self.column))?;
@@ -123,7 +93,7 @@ impl Action for RemoveColumn {
                     table = self.table,
                     declarations = declarations.join("\n"),
                 );
-                db.run(&query).context("failed to create down trigger")?;
+                db.run(&query).await.context("failed to create down trigger")?;
             }
 
             if let Transformation::Update {
@@ -137,7 +107,7 @@ impl Action for RemoveColumn {
                     None => bail!("can't use update without previous migration"),
                 };
 
-                let from_table = schema.get_table(db, &from_table)?;
+                let from_table = schema.get_table(db, &from_table).await?;
 
                 let maybe_null_check = if !column.nullable {
                     // Replace NOT NULL constraint with a constraint trigger that only triggers on the old schema.
@@ -170,8 +140,7 @@ impl Action for RemoveColumn {
                         trigger_name = self.not_null_constraint_trigger_name(ctx),
                         column = self.column,
                     );
-                    db.run(&query)
-                        .context("failed to create null constraint trigger")?;
+                    db.run(&query).await.context("failed to create null constraint trigger")?;
 
                     db.run(&format!(
                         r#"
@@ -181,7 +150,7 @@ impl Action for RemoveColumn {
                         "#,
                         table = self.table,
                         column = self.column
-                    ))
+                    )).await
                     .context("failed to remove column not null constraint")?;
 
                     format!(
@@ -247,7 +216,7 @@ impl Action for RemoveColumn {
                     column_name = self.column,
                     trigger_name = self.trigger_name(ctx),
                 );
-                db.run(&query).context("failed to create down trigger")?;
+                db.run(&query).await.context("failed to create down trigger")?;
 
                 let changed_into_variables = table
                     .columns
@@ -314,21 +283,20 @@ impl Action for RemoveColumn {
                     trigger_name = self.reverse_trigger_name(ctx),
                     // declarations = declarations.join("\n"),
                 );
-                db.run(&query)
-                    .context("failed to create reverse down trigger")?;
+                db.run(&query).await.context("failed to create reverse down trigger")?;
             }
         }
 
         Ok(())
     }
 
-    fn complete<'a>(
+    async fn complete<'a>(
         &self,
         ctx: &MigrationContext,
-        db: &'a mut dyn Conn,
+        db: &'a mut dyn Connection,
     ) -> anyhow::Result<Option<Transaction<'a>>> {
         let indices = common::get_indices_for_column(db, &self.table, &self.column)
-            .context("failed getting column indices")?;
+            .await.context("failed getting column indices")?;
 
         for index in indices {
             db.run(&format!(
@@ -336,7 +304,7 @@ impl Action for RemoveColumn {
                 DROP INDEX CONCURRENTLY IF EXISTS {name}
                 ",
                 name = index.name,
-            ))
+            )).await
             .context("failed to drop index")?;
         }
 
@@ -356,8 +324,7 @@ impl Action for RemoveColumn {
             reverse_trigger_name = self.reverse_trigger_name(ctx),
             null_trigger_name = self.not_null_constraint_trigger_name(ctx),
         );
-        db.run(&query)
-            .context("failed to drop column and down trigger")?;
+        db.run(&query).await.context("failed to drop column and down trigger")?;
 
         Ok(None)
     }
@@ -370,7 +337,7 @@ impl Action for RemoveColumn {
         });
     }
 
-    fn abort(&self, ctx: &MigrationContext, db: &mut dyn Conn) -> anyhow::Result<()> {
+    async fn abort(&self, ctx: &MigrationContext, db: &mut dyn Connection) -> anyhow::Result<()> {
         // We might have temporaily removed the NOT NULL check and have to reinstate it
         let has_not_null_function = !db
             .query_with_params(
@@ -381,7 +348,7 @@ impl Action for RemoveColumn {
                 AND routine_name = $1
                 ",
                 &[&self.not_null_constraint_trigger_name(ctx)],
-            )
+            ).await
             .context("failed to get any NOT NULL function")?
             .is_empty();
 
@@ -397,8 +364,7 @@ impl Action for RemoveColumn {
                 constraint_name = self.not_null_constraint_name(ctx),
                 column = self.column,
             );
-            db.run(&query)
-                .context("failed to add NOT NULL constraint")?;
+            db.run(&query).await.context("failed to add NOT NULL constraint")?;
 
             let query = format!(
                 r#"
@@ -408,8 +374,7 @@ impl Action for RemoveColumn {
                 table = self.table,
                 constraint_name = self.not_null_constraint_name(ctx),
             );
-            db.run(&query)
-                .context("failed to validate NOT NULL constraint")?;
+            db.run(&query).await.context("failed to validate NOT NULL constraint")?;
 
             // This ALTER TABLE call will not require any exclusive locks as it can use the validated constraint from above
             db.run(&format!(
@@ -420,7 +385,7 @@ impl Action for RemoveColumn {
                 "#,
                 table = self.table,
                 column = self.column
-            ))
+            )).await
             .context("failed to reinstate column NOT NULL")?;
 
             // Drop the temporary constraint
@@ -432,8 +397,7 @@ impl Action for RemoveColumn {
                 table = self.table,
                 constraint_name = self.not_null_constraint_name(ctx),
             );
-            db.run(&query)
-                .context("failed to drop NOT NULL constraint")?;
+            db.run(&query).await.context("failed to drop NOT NULL constraint")?;
         }
 
         // Remove function and trigger
@@ -446,9 +410,47 @@ impl Action for RemoveColumn {
             trigger_name = self.trigger_name(ctx),
             reverse_trigger_name = self.reverse_trigger_name(ctx),
             null_trigger_name = self.not_null_constraint_trigger_name(ctx),
-        ))
+        )).await
         .context("failed to drop down trigger")?;
 
         Ok(())
+    }
+}
+
+impl RemoveColumn {
+    fn trigger_name(&self, ctx: &MigrationContext) -> String {
+        format!(
+            "{}_remove_column_{}_{}",
+            ctx.prefix(),
+            self.table,
+            self.column
+        )
+    }
+
+    fn reverse_trigger_name(&self, ctx: &MigrationContext) -> String {
+        format!(
+            "{}_remove_column_{}_{}_rev",
+            ctx.prefix(),
+            self.table,
+            self.column
+        )
+    }
+
+    fn not_null_constraint_trigger_name(&self, ctx: &MigrationContext) -> String {
+        format!(
+            "{}_remove_column_{}_{}_nn",
+            ctx.prefix(),
+            self.table,
+            self.column
+        )
+    }
+
+    fn not_null_constraint_name(&self, ctx: &MigrationContext) -> String {
+        format!(
+            "{}_add_column_not_null_{}_{}",
+            ctx.prefix(),
+            self.table,
+            self.column
+        )
     }
 }

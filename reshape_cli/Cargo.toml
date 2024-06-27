@@ -1,0 +1,33 @@
+[package]
+name = "reshape_cli"
+version = "0.7.0"
+description = "An easy-to-use, zero-downtime schema migration tool for Postgres"
+homepage = "https://github.com/fabianlindfors/reshape"
+documentation = "https://github.com/fabianlindfors/reshape"
+repository = "https://github.com/fabianlindfors/reshape"
+license = "MIT"
+keywords = ["postgres", "migrations"]
+edition = "2021"
+authors = ["Fabian Lindfors"]
+rust-version = "1.70"
+
+[[bin]]
+name = "reshape"
+path = "src/main.rs"
+
+[dependencies]
+reshape = { path = "../reshape" }
+
+tokio = { version = "1.38.0", features = ["rt"] }
+
+serde = { version = "1.0.203", features = ["derive"] }
+serde_json = "1.0.118"
+toml = "0.8.14"
+
+clap = { version = "4.5.7", features = ["derive"] }
+version = "3.0.0"
+colored = "2.1.0"
+
+anyhow = { version = "1.0.86", features = ["backtrace"] }
+dotenvy = "0.15.7"
+lexical-sort = "0.3.1"

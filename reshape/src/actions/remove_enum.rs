@@ -1,10 +1,13 @@
-use super::{Action, MigrationContext};
-use crate::{
-    db::{Conn, Transaction},
-    schema::Schema,
-};
-use anyhow::Context;
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+use anyhow::Context;
+
+use crate::{
+    db::{Connection, Transaction},
+    schema::Schema,
+    actions::{Action, MigrationContext},
+};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RemoveEnum {
@@ -12,32 +15,38 @@ pub struct RemoveEnum {
     pub enum_name: String,
 }
 
-#[typetag::serde(name = "remove_enum")]
-impl Action for RemoveEnum {
-    fn describe(&self) -> String {
-        format!("Removing enum \"{}\"", self.enum_name)
+impl fmt::Display for RemoveEnum {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f,
+            "Removing enum \"{}\"",
+            self.enum_name
+        )
     }
+}
 
-    fn run(
+#[typetag::serde(name = "remove_enum")]
+#[async_trait::async_trait]
+impl Action for RemoveEnum {
+    async fn run(
         &self,
         _ctx: &MigrationContext,
-        _db: &mut dyn Conn,
+        _db: &mut dyn Connection,
         _schema: &Schema,
     ) -> anyhow::Result<()> {
         Ok(())
     }
 
-    fn complete<'a>(
+    async fn complete<'a>(
         &self,
         _ctx: &MigrationContext,
-        db: &'a mut dyn Conn,
+        db: &'a mut dyn Connection,
     ) -> anyhow::Result<Option<Transaction<'a>>> {
         db.run(&format!(
             r#"
             DROP TYPE IF EXISTS {name}
             "#,
             name = self.enum_name,
-        ))
+        )).await
         .context("failed to drop enum")?;
 
         Ok(None)
@@ -45,7 +54,7 @@ impl Action for RemoveEnum {
 
     fn update_schema(&self, _ctx: &MigrationContext, _schema: &mut Schema) {}
 
-    fn abort(&self, _ctx: &MigrationContext, _db: &mut dyn Conn) -> anyhow::Result<()> {
+    async fn abort(&self, _ctx: &MigrationContext, _db: &mut dyn Connection) -> anyhow::Result<()> {
         Ok(())
     }
 }

@@ -1,10 +1,13 @@
-use super::{Action, MigrationContext};
-use crate::{
-    db::{Conn, Transaction},
-    schema::Schema,
-};
-use anyhow::Context;
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+use anyhow::Context;
+
+use crate::{
+    db::{Connection, Transaction},
+    schema::Schema,
+    actions::{Action, MigrationContext},
+};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AddIndex {
@@ -22,22 +25,26 @@ pub struct Index {
     pub index_type: Option<String>,
 }
 
-#[typetag::serde(name = "add_index")]
-impl Action for AddIndex {
-    fn describe(&self) -> String {
-        format!(
+impl fmt::Display for AddIndex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f,
             "Adding index \"{}\" to table \"{}\"",
-            self.index.name, self.table
+            self.index.name,
+            self.table
         )
     }
+}
 
-    fn run(
+#[typetag::serde(name = "add_index")]
+#[async_trait::async_trait]
+impl Action for AddIndex {
+    async fn run(
         &self,
         _ctx: &MigrationContext,
-        db: &mut dyn Conn,
+        db: &mut dyn Connection,
         schema: &Schema,
     ) -> anyhow::Result<()> {
-        let table = schema.get_table(db, &self.table)?;
+        let table = schema.get_table(db, &self.table).await?;
 
         let column_real_names: Vec<String> = table
             .columns
@@ -55,33 +62,33 @@ impl Action for AddIndex {
 
         db.run(&format!(
             r#"
-			CREATE {unique} INDEX CONCURRENTLY "{name}" ON "{table}" {index_type_def} ({columns}) 
+			CREATE {unique} INDEX CONCURRENTLY "{name}" ON "{table}" {index_type_def} ({columns})
 			"#,
             name = self.index.name,
             table = self.table,
             columns = column_real_names.join(", "),
-        ))
+        )).await
         .context("failed to create index")?;
         Ok(())
     }
 
-    fn complete<'a>(
+    async fn complete<'a>(
         &self,
         _ctx: &MigrationContext,
-        _db: &'a mut dyn Conn,
+        _db: &'a mut dyn Connection,
     ) -> anyhow::Result<Option<Transaction<'a>>> {
         Ok(None)
     }
 
     fn update_schema(&self, _ctx: &MigrationContext, _schema: &mut Schema) {}
 
-    fn abort(&self, _ctx: &MigrationContext, db: &mut dyn Conn) -> anyhow::Result<()> {
+    async fn abort(&self, _ctx: &MigrationContext, db: &mut dyn Connection) -> anyhow::Result<()> {
         db.run(&format!(
             r#"
 			DROP INDEX CONCURRENTLY IF EXISTS "{name}"
 			"#,
             name = self.index.name,
-        ))
+        )).await
         .context("failed to drop index")?;
         Ok(())
     }

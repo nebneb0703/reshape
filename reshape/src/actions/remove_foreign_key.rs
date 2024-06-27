@@ -1,10 +1,13 @@
-use super::{Action, MigrationContext};
-use crate::{
-    db::{Conn, Transaction},
-    schema::Schema,
-};
-use anyhow::{anyhow, Context};
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+use anyhow::{anyhow, Context};
+
+use crate::{
+    db::{Connection, Transaction},
+    schema::Schema,
+    actions::{Action, MigrationContext},
+};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RemoveForeignKey {
@@ -12,19 +15,23 @@ pub struct RemoveForeignKey {
     foreign_key: String,
 }
 
-#[typetag::serde(name = "remove_foreign_key")]
-impl Action for RemoveForeignKey {
-    fn describe(&self) -> String {
-        format!(
+impl fmt::Display for RemoveForeignKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f,
             "Removing foreign key \"{}\" from table \"{}\"",
-            self.foreign_key, self.table
+            self.foreign_key,
+            self.table
         )
     }
+}
 
-    fn run(
+#[typetag::serde(name = "remove_foreign_key")]
+#[async_trait::async_trait]
+impl Action for RemoveForeignKey {
+    async fn run(
         &self,
         _ctx: &MigrationContext,
-        db: &mut dyn Conn,
+        db: &mut dyn Connection,
         schema: &Schema,
     ) -> anyhow::Result<()> {
         // The foreign key is only removed once the migration is completed.
@@ -38,7 +45,7 @@ impl Action for RemoveForeignKey {
         //   the risk that it would no longer be valid.
 
         // Ensure foreign key exists
-        let table = schema.get_table(db, &self.table)?;
+        let table = schema.get_table(db, &self.table).await?;
         let fk_exists = !db
             .query(&format!(
                 r#"
@@ -47,11 +54,11 @@ impl Action for RemoveForeignKey {
                 WHERE
                     constraint_type = 'FOREIGN KEY' AND
                     table_name = '{table_name}' AND
-                    constraint_name = '{foreign_key}' 
+                    constraint_name = '{foreign_key}'
                 "#,
                 table_name = table.real_name,
                 foreign_key = self.foreign_key,
-            ))
+            )).await
             .context("failed to check for foreign key")?
             .is_empty();
 
@@ -66,10 +73,10 @@ impl Action for RemoveForeignKey {
         Ok(())
     }
 
-    fn complete<'a>(
+    async fn complete<'a>(
         &self,
         _ctx: &MigrationContext,
-        db: &'a mut dyn Conn,
+        db: &'a mut dyn Connection,
     ) -> anyhow::Result<Option<Transaction<'a>>> {
         db.run(&format!(
             r#"
@@ -78,14 +85,14 @@ impl Action for RemoveForeignKey {
             "#,
             table = self.table,
             foreign_key = self.foreign_key,
-        ))
+        )).await
         .context("failed to remove foreign key")?;
         Ok(None)
     }
 
     fn update_schema(&self, _ctx: &MigrationContext, _schema: &mut Schema) {}
 
-    fn abort(&self, _ctx: &MigrationContext, _db: &mut dyn Conn) -> anyhow::Result<()> {
+    async fn abort(&self, _ctx: &MigrationContext, _db: &mut dyn Connection) -> anyhow::Result<()> {
         Ok(())
     }
 }

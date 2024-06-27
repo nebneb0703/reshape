@@ -1,10 +1,13 @@
-use super::{Action, MigrationContext};
-use crate::{
-    db::{Conn, Transaction},
-    schema::Schema,
-};
-use anyhow::Context;
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+use anyhow::Context;
+
+use crate::{
+    db::{Connection, Transaction},
+    schema::Schema,
+    actions::{Action, MigrationContext},
+};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RenameTable {
@@ -12,25 +15,32 @@ pub struct RenameTable {
     pub new_name: String,
 }
 
-#[typetag::serde(name = "rename_table")]
-impl Action for RenameTable {
-    fn describe(&self) -> String {
-        format!("Renaming table \"{}\" to \"{}\"", self.table, self.new_name)
+impl fmt::Display for RenameTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f,
+            "Renaming table \"{}\" to \"{}\"",
+            self.table,
+            self.new_name
+        )
     }
+}
 
-    fn run(
+#[typetag::serde(name = "rename_table")]
+#[async_trait::async_trait]
+impl Action for RenameTable {
+    async fn run(
         &self,
         _ctx: &MigrationContext,
-        _db: &mut dyn Conn,
+        _db: &mut dyn Connection,
         _schema: &Schema,
     ) -> anyhow::Result<()> {
         Ok(())
     }
 
-    fn complete<'a>(
+    async fn complete<'a>(
         &self,
         _ctx: &MigrationContext,
-        db: &'a mut dyn Conn,
+        db: &'a mut dyn Connection,
     ) -> anyhow::Result<Option<Transaction<'a>>> {
         // Rename table
         let query = format!(
@@ -41,7 +51,7 @@ impl Action for RenameTable {
             table = self.table,
             new_name = self.new_name,
         );
-        db.run(&query).context("failed to rename table")?;
+        db.run(&query).await.context("failed to rename table")?;
 
         Ok(None)
     }
@@ -52,7 +62,7 @@ impl Action for RenameTable {
         });
     }
 
-    fn abort(&self, _ctx: &MigrationContext, _db: &mut dyn Conn) -> anyhow::Result<()> {
+    async fn abort(&self, _ctx: &MigrationContext, _db: &mut dyn Connection) -> anyhow::Result<()> {
         Ok(())
     }
 }

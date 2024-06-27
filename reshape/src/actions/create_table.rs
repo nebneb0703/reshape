@@ -1,13 +1,16 @@
-use std::collections::HashMap;
+use std::{fmt, collections::HashMap};
 
-use super::{common::ForeignKey, Action, Column, MigrationContext};
-use crate::{
-    db::{Conn, Transaction},
-    migrations::common,
-    schema::Schema,
-};
-use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use anyhow::Context;
+
+use crate::{
+    db::{Connection, Transaction},
+    schema::Schema,
+    actions::{
+        Action, MigrationContext, Column,
+        common::{self, ForeignKey},
+    },
+};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct CreateTable {
@@ -28,22 +31,22 @@ pub struct Transformation {
     upsert_constraint: Option<String>,
 }
 
-impl CreateTable {
-    fn trigger_name(&self, ctx: &MigrationContext) -> String {
-        format!("{}_create_table_{}", ctx.prefix(), self.name)
+impl fmt::Display for CreateTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f,
+            "Creating table \"{}\"",
+            self.name
+        )
     }
 }
 
 #[typetag::serde(name = "create_table")]
+#[async_trait::async_trait]
 impl Action for CreateTable {
-    fn describe(&self) -> String {
-        format!("Creating table \"{}\"", self.name)
-    }
-
-    fn run(
+    async fn run(
         &self,
         ctx: &MigrationContext,
-        db: &mut dyn Conn,
+        db: &mut dyn Connection,
         schema: &Schema,
     ) -> anyhow::Result<()> {
         let mut definition_rows: Vec<String> = self
@@ -87,7 +90,7 @@ impl Action for CreateTable {
                 .map(|col| format!("\"{}\"", col))
                 .collect();
 
-            let referenced_table = schema.get_table(db, &foreign_key.referenced_table)?;
+            let referenced_table = schema.get_table(db, &foreign_key.referenced_table).await?;
             let referenced_columns: Vec<String> = referenced_table
                 .real_column_names(&foreign_key.referenced_columns)
                 .map(|col| format!("\"{}\"", col))
@@ -112,7 +115,7 @@ impl Action for CreateTable {
             name = self.name,
             definition = definition_rows.join(",\n"),
         );
-        db.run(query).context("failed to create table")?;
+        db.run(query).await.context("failed to create table")?;
 
         if let Some(Transformation {
             table: from_table,
@@ -120,7 +123,7 @@ impl Action for CreateTable {
             upsert_constraint,
         }) = &self.up
         {
-            let from_table = schema.get_table(db, &from_table)?;
+            let from_table = schema.get_table(db, &from_table).await?;
 
             let declarations: Vec<String> = from_table
                 .columns
@@ -184,20 +187,20 @@ impl Action for CreateTable {
                 values = insert_values.join(", "),
                 updates = update_set.join(",\n"),
             );
-            db.run(&query).context("failed to create up trigger")?;
+            db.run(&query).await.context("failed to create up trigger")?;
 
             // Backfill values in batches by touching the from table
             common::batch_touch_rows(db, &from_table.real_name, None)
-                .context("failed to batch update existing rows")?;
+                .await.context("failed to batch update existing rows")?;
         }
 
         Ok(())
     }
 
-    fn complete<'a>(
+    async fn complete<'a>(
         &self,
         ctx: &MigrationContext,
-        db: &'a mut dyn Conn,
+        db: &'a mut dyn Connection,
     ) -> anyhow::Result<Option<Transaction<'a>>> {
         // Remove triggers and procedures
         let query = format!(
@@ -206,14 +209,14 @@ impl Action for CreateTable {
             "#,
             trigger_name = self.trigger_name(ctx),
         );
-        db.run(&query).context("failed to drop up trigger")?;
+        db.run(&query).await.context("failed to drop up trigger")?;
 
         Ok(None)
     }
 
     fn update_schema(&self, _ctx: &MigrationContext, _schema: &mut Schema) {}
 
-    fn abort(&self, ctx: &MigrationContext, db: &mut dyn Conn) -> anyhow::Result<()> {
+    async fn abort(&self, ctx: &MigrationContext, db: &mut dyn Connection) -> anyhow::Result<()> {
         // Remove triggers and procedures
         let query = format!(
             r#"
@@ -221,16 +224,22 @@ impl Action for CreateTable {
             "#,
             trigger_name = self.trigger_name(ctx),
         );
-        db.run(&query).context("failed to drop up trigger")?;
+        db.run(&query).await.context("failed to drop up trigger")?;
 
         db.run(&format!(
             r#"
             DROP TABLE IF EXISTS "{name}"
             "#,
             name = self.name,
-        ))
+        )).await
         .context("failed to drop table")?;
 
         Ok(())
+    }
+}
+
+impl CreateTable {
+    fn trigger_name(&self, ctx: &MigrationContext) -> String {
+        format!("{}_create_table_{}", ctx.prefix(), self.name)
     }
 }

@@ -5,20 +5,21 @@ use crate::{
 
 use anyhow::{anyhow, Context};
 use colored::*;
-use db::{Conn, DbConn, DbLocker};
+use db::{Conn, Postgres, Lock};
 use postgres::Config;
 use schema::Table;
 
 mod db;
 mod helpers;
-pub mod migrations;
+pub mod migration;
+pub mod actions;
 mod schema;
 mod state;
 
 pub use crate::state::State;
 
 pub struct Reshape {
-    db: DbLocker,
+    db: Lock,
 }
 
 impl Reshape {
@@ -46,7 +47,7 @@ impl Reshape {
     }
 
     fn new_with_config(config: &Config) -> anyhow::Result<Reshape> {
-        let db = DbLocker::connect(config)?;
+        let db = Lock::connect(config)?;
         Ok(Reshape { db })
     }
 
@@ -158,7 +159,7 @@ fn schema_name_for_migration(migration_name: &str) -> String {
 }
 
 fn status(
-    db: &mut DbConn,
+    db: &mut Postgres,
     state: &State,
     migrations: impl IntoIterator<Item = Migration>,
 ) -> anyhow::Result<()> {
@@ -401,7 +402,7 @@ fn status(
 }
 
 fn migrate(
-    db: &mut DbConn,
+    db: &mut Postgres,
     state: &mut State,
     migrations: impl IntoIterator<Item = Migration>,
     range: Range,
@@ -581,7 +582,7 @@ fn migrate(
     Ok(())
 }
 
-fn complete(db: &mut DbConn, state: &mut State) -> anyhow::Result<()> {
+fn complete(db: &mut Postgres, state: &mut State) -> anyhow::Result<()> {
     // Make sure a migration is in progress
     let (remaining_migrations, starting_migration_index, starting_action_index) = match state.clone() {
         State::InProgress { migrations } => {
@@ -713,7 +714,7 @@ fn complete(db: &mut DbConn, state: &mut State) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn abort(db: &mut DbConn, state: &mut State, range: Range) -> anyhow::Result<()> {
+fn abort(db: &mut Postgres, state: &mut State, range: Range) -> anyhow::Result<()> {
     let (remaining_migrations, last_migration_index, last_action_index) = match state.clone() {
         State::InProgress { migrations } | State::Applying { migrations } => {
             // Set to the Aborting state. Once this is done, the migration has to
@@ -813,7 +814,7 @@ fn abort(db: &mut DbConn, state: &mut State, range: Range) -> anyhow::Result<()>
 }
 
 fn create_schema_for_migration(
-    db: &mut DbConn,
+    db: &mut Postgres,
     migration_name: &str,
     schema: &Schema,
 ) -> anyhow::Result<()> {

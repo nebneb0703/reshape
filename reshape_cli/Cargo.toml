@@ -18,7 +18,7 @@ path = "src/main.rs"
 [dependencies]
 reshape = { path = "../reshape" }
 
-tokio = { version = "1.38.0", features = ["rt"] }
+tokio = { version = "1.38.0", features = ["rt", "macros"] }
 
 serde = { version = "1.0.203", features = ["derive"] }
 serde_json = "1.0.118"

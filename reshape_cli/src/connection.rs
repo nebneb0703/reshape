@@ -10,16 +10,16 @@ pub struct Options {
     host: String,
     #[clap(long, default_value = "5432")]
     port: u16,
-    #[clap(long, short, default_value = "postgres")]
-    database: String,
+    #[clap(long, short)]
+    database: Option<String>,
     #[clap(long, short, default_value = "postgres")]
     username: String,
-    #[clap(long, short, default_value = "postgres")]
-    password: String,
+    #[clap(long, short)]
+    password: Option<String>,
 }
 
 impl Options {
-    pub fn to_reshape_from_env(&self) -> anyhow::Result<Reshape> {
+    pub async fn to_reshape_from_env(&self) -> anyhow::Result<Reshape> {
         // Load environment variables from .env file if it exists
         dotenvy::dotenv().ok();
 
@@ -28,7 +28,7 @@ impl Options {
 
         // Use the connection URL if it has been set
         if let Some(url) = url {
-            return Reshape::new(url);
+            return Reshape::new(url).await;
         }
 
         let host_env = std::env::var("DB_HOST").ok();
@@ -43,11 +43,11 @@ impl Options {
         let username = username_env.as_ref().unwrap_or(&self.username);
 
         let password_env = std::env::var("DB_PASSWORD").ok();
-        let password = password_env.as_ref().unwrap_or(&self.password);
+        let password = password_env.as_ref().or(self.password.as_ref()).unwrap();
 
         let database_env = std::env::var("DB_NAME").ok();
-        let database = database_env.as_ref().unwrap_or(&self.database);
+        let database = database_env.as_ref().or(self.database.as_ref()).unwrap();
 
-        Reshape::new_with_options(host, port, database, username, password)
+        Reshape::new_with_options(host, port, database, username, password).await
     }
 }

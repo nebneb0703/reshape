@@ -41,7 +41,7 @@ impl Migration {
             ))?;
 
         let data = fs::read_to_string(path)?;
-        let name = path.file_name().and_then(|name| name.to_str()).map(ToOwned::to_owned);
+        let name = path.file_stem().and_then(|name| name.to_str()).map(ToOwned::to_owned);
 
         Self::from_text(&data, name, format)
     }

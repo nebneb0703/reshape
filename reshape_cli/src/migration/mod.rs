@@ -1,7 +1,7 @@
-mod start;
+mod start; use start::migrate;
 mod status;
-mod complete;
-mod abort;
+mod complete; use complete::complete;
+mod abort; use abort::abort;
 
 use clap::Parser;
 
@@ -34,11 +34,11 @@ pub enum Command {
     Abort(abort::Options),
 }
 
-pub fn command(cmd: Command) -> anyhow::Result<()> {
+pub async fn command(cmd: Command) -> anyhow::Result<()> {
     match cmd {
-        Command::Start(opts) => start::command(opts),
-        Command::Status(opts) => status::command(opts),
-        Command::Complete(opts) => complete::command(opts),
-        Command::Abort(opts) => abort::command(opts),
+        Command::Start(opts) => start::command(opts).await,
+        Command::Status(opts) => status::command(opts).await,
+        Command::Complete(opts) => complete::command(opts).await,
+        Command::Abort(opts) => abort::command(opts).await,
     }
 }

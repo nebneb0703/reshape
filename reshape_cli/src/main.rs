@@ -3,18 +3,7 @@ mod connection;
 mod config;
 mod range;
 
-use std::{
-    path::Path,
-    fs,
-};
-
-use anyhow::{Context, anyhow};
 use clap::Parser;
-use reshape::{
-    migrations::{Action, Migration},
-    Reshape, Range
-};
-use serde::{Deserialize, Serialize};
 
 #[derive(Parser)]
 #[clap(name = "Reshape", version, about)]
@@ -36,19 +25,21 @@ enum Command {
     SchemaQuery(config::Options),
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> anyhow::Result<()> {
     let args: Args = Args::parse();
 
     match args.cmd {
-        Command::Migration(cmd) => migration::command(cmd),
+        Command::Migration(cmd) => migration::command(cmd).await,
         Command::SchemaQuery(opts) => {
-            let migrations = find_migrations(&opts)?;
-            let query = migrations
-                .last()
-                .map(|migration| reshape::schema_query_for_migration(&migration.name));
-            println!("{}", query.unwrap_or_else(|| "".to_string()));
+            todo!();
+            // let migrations = find_migrations(&opts)?;
+            // let query = migrations
+            //     .last()
+            //     .map(|migration| reshape::schema_query_for_migration(&migration.name));
+            // println!("{}", query.unwrap_or_else(|| "".to_string()));
 
-            Ok(())
+            // Ok(())
         },
     }
 }

@@ -1,7 +1,5 @@
 use clap::{ Args, ArgAction };
 
-use reshape::Range;
-
 #[derive(Args)]
 #[group(
     multiple = false,
@@ -32,4 +30,10 @@ impl From<Options> for Range {
             _ => unreachable!("invalid abort options"),
         }
     }
+}
+
+pub enum Range {
+    All,
+    Number(usize),
+    UpTo(String),
 }

@@ -51,6 +51,29 @@ impl Schema {
         let table_changes = &mut self.table_changes[table_change_index];
         f(table_changes)
     }
+
+    pub async fn create_for_migration(
+        &self,
+        db: &mut impl Connection,
+        migration_name: &str
+    ) -> anyhow::Result<()> {
+        // Create schema for migration
+        let schema_name = crate::schema_name_for_migration(migration_name);
+        db.run(&format!("CREATE SCHEMA IF NOT EXISTS {}", schema_name)).await
+            .with_context(|| {
+                format!(
+                    "failed to create schema {} for migration {}",
+                    schema_name, migration_name
+                )
+            })?;
+
+        // Create views inside schema
+        for table in self.get_tables(db).await? {
+            table.create_view(db, &schema_name).await?;
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for Schema {
@@ -310,6 +333,41 @@ impl Table {
 
     pub fn get_column(&self, name: &str) -> Option<&Column> {
         self.columns.iter().find(|column| column.name == name)
+    }
+
+    pub async fn create_view(
+        &self,
+        db: &mut impl Connection,
+        schema: &str
+    ) -> anyhow::Result<()> {
+        let select_columns: Vec<String> = self
+            .columns
+            .iter()
+            .map(|column| {
+                format!(
+                    r#"
+                        "{real_name}" AS "{alias}"
+                        "#,
+                    real_name = column.real_name,
+                    alias = column.name,
+                )
+            })
+            .collect();
+
+        db.run(&format!(
+            r#"
+            CREATE OR REPLACE VIEW {schema}."{view_name}" AS
+                SELECT {columns}
+                FROM "{table_name}"
+            "#,
+            schema = schema,
+            table_name = self.real_name,
+            view_name = self.name,
+            columns = select_columns.join(","),
+        )).await
+        .with_context(|| format!("failed to create view for table {}", self.name))?;
+
+        Ok(())
     }
 }
 

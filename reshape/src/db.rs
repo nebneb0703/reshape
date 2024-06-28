@@ -22,7 +22,7 @@ pub struct Lock {
 impl Lock {
     // Advisory lock keys in Postgres are 64-bit integers.
     // The key we use was chosen randomly.
-    const LOCK_KEY: i64 = 4036779288569897133;
+    const KEY: i64 = 4036779288569897133;
 
     pub async fn connect(config: &postgres::Config) -> anyhow::Result<Self> {
         let (pg, conn) = config.connect(NoTls).await?;
@@ -52,36 +52,25 @@ impl Lock {
         })
     }
 
-    pub async fn lock(
-        &mut self,
-        f: impl FnOnce(&mut Postgres) -> anyhow::Result<()>,
-    ) -> anyhow::Result<()> {
-        self.acquire_lock().await?;
-        let result = f(&mut self.client);
-        self.release_lock().await?;
-
-        result
-    }
-
-    async fn acquire_lock(&mut self) -> anyhow::Result<()> {
+    pub async fn acquire_lock(&mut self) -> anyhow::Result<&mut Postgres> {
         let success = self
             .client
-            .query(&format!("SELECT pg_try_advisory_lock({})", Self::LOCK_KEY))
+            .query(&format!("SELECT pg_try_advisory_lock({})", Self::KEY))
             .await?
             .first()
             .ok_or_else(|| anyhow!("unexpectedly failed when acquiring advisory lock"))
             .map(|row| row.get::<'_, _, bool>(0))?;
 
         if success {
-            Ok(())
+            Ok(&mut self.client)
         } else {
             Err(anyhow!("another instance of Reshape is already running"))
         }
     }
 
-    async fn release_lock(&mut self) -> anyhow::Result<()> {
+    pub async fn release_lock(&mut self) -> anyhow::Result<()> {
         self.client
-            .query(&format!("SELECT pg_advisory_unlock({})", Self::LOCK_KEY))
+            .query(&format!("SELECT pg_advisory_unlock({})", Self::KEY))
             .await?
             .first()
             .ok_or_else(|| anyhow!("unexpectedly failed when releasing advisory lock"))?;

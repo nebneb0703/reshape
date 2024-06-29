@@ -82,6 +82,8 @@ pub async fn abort(
     db.run(&format!("DROP SCHEMA IF EXISTS {} CASCADE", schema_name,))
         .await.with_context(|| format!("failed to drop schema {}", schema_name))?;
 
+    let mut ctx = MigrationContext::new(last_migration_index, last_action_index, current_migration(db).await?);
+
     // Abort all pending migrations
     // Abort all migrations in reverse order
     for (migration_index, migration) in remaining_migrations.iter().enumerate().rev() {
@@ -96,27 +98,20 @@ pub async fn abort(
             break;
         }
 
+        ctx.migration_index = migration_index;
+
         print!("Aborting '{}' ", migration.name);
 
-        for (action_index, action) in migration.actions.iter().enumerate().rev() {
-            // Skip actions which shouldn't be aborted
-            // The reason can be that they have already been aborted or that
-            // the action was never applied in the first place.
-            if migration_index == last_migration_index - 1 && action_index >= last_action_index {
-                continue;
-            }
+        // todo: verify that this leads to correct state saving
+        let result = migration.abort(db, &mut ctx).await
+            .with_context(|| format!("failed to abort migration {}", migration.name));
 
-            let ctx =
-                MigrationContext::new(migration_index, action_index, current_migration(db).await?);
-            action.abort(&ctx, db).await
-                .with_context(|| format!("failed to abort migration {}", migration.name))
-                .with_context(|| format!("failed to abort action: {}", action))?;
+        // Update state with which migrations and actions have been aborted.
+        // We don't need to run this in a transaction as aborts are idempotent.
+        state.aborting(remaining_migrations.to_vec(), ctx.migration_index, ctx.action_index);
+        state.save(db).await.context("failed to save state")?;
 
-            // Update state with which migrations and actions have been aborted.
-            // We don't need to run this in a transaction as aborts are idempotent.
-            state.aborting(remaining_migrations.to_vec(), migration_index, action_index);
-            state.save(db).await.context("failed to save state")?;
-        }
+        result?;
 
         println!("{}", "done".green());
     }

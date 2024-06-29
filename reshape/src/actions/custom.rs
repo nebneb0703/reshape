@@ -3,7 +3,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    db::{Connection, Transaction},
+    db::Connection,
     schema::Schema,
     actions::{Action, MigrationContext},
 };
@@ -47,12 +47,12 @@ impl Action for Custom {
         &self,
         _ctx: &MigrationContext,
         db: &'a mut dyn Connection,
-    ) -> anyhow::Result<Option<Transaction<'a>>> {
+    ) -> anyhow::Result<()> {
         if let Some(complete_query) = &self.complete {
             db.run(complete_query).await?;
         }
 
-        Ok(None)
+        Ok(())
     }
 
     fn update_schema(&self, _ctx: &MigrationContext, _schema: &mut Schema) {}

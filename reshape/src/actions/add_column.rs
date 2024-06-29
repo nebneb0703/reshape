@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use anyhow::{bail, Context};
 
 use crate::{
-    db::{Connection, Transaction},
+    db::Connection,
     schema::Schema,
     actions::{Action, MigrationContext, common, Column},
 };
@@ -277,8 +277,6 @@ impl Action for AddColumn {
                 column = temp_column_name,
             );
 
-            println!("DEBUG: {query}");
-
             db.run(&query).await.context("failed to add NOT NULL constraint")?;
         }
 
@@ -289,9 +287,7 @@ impl Action for AddColumn {
         &self,
         ctx: &MigrationContext,
         db: &'a mut dyn Connection,
-    ) -> anyhow::Result<Option<Transaction<'a>>> {
-        let mut transaction = db.transaction().await.context("failed to create transaction")?;
-
+    ) -> anyhow::Result<()> {
         // Remove triggers and procedures
         let query = format!(
             r#"
@@ -301,7 +297,9 @@ impl Action for AddColumn {
             trigger_name = self.trigger_name(ctx),
             reverse_trigger_name = self.reverse_trigger_name(ctx),
         );
-        transaction.run(&query).await.context("failed to drop up trigger")?;
+        db.run(&query).await.context("failed to drop up trigger")?;
+
+        // todo: make idempotent
 
         // Update column to be NOT NULL if necessary
         if !self.column.nullable {
@@ -315,7 +313,7 @@ impl Action for AddColumn {
                 table = self.table,
                 constraint_name = self.not_null_constraint_name(ctx),
             );
-            transaction.run(&query).await.context("failed to validate NOT NULL constraint")?;
+            db.run(&query).await.context("failed to validate NOT NULL constraint")?;
 
             // Update the column to be NOT NULL.
             // This requires an exclusive lock but since PG 12 it can check
@@ -329,7 +327,7 @@ impl Action for AddColumn {
                 table = self.table,
                 column = self.temp_column_name(ctx),
             );
-            transaction.run(&query).await.context("failed to set column as NOT NULL")?;
+            db.run(&query).await.context("failed to set column as NOT NULL")?;
 
             // Drop the temporary constraint
             let query = format!(
@@ -340,11 +338,11 @@ impl Action for AddColumn {
                 table = self.table,
                 constraint_name = self.not_null_constraint_name(ctx),
             );
-            transaction.run(&query).await.context("failed to drop NOT NULL constraint")?;
+            db.run(&query).await.context("failed to drop NOT NULL constraint")?;
         }
 
         // Rename the temporary column to its real name
-        transaction
+        db
             .run(&format!(
                 r#"
                 ALTER TABLE "{table}"
@@ -356,7 +354,7 @@ impl Action for AddColumn {
             )).await
             .context("failed to rename column to final name")?;
 
-        Ok(Some(transaction))
+        Ok(())
     }
 
     fn update_schema(&self, ctx: &MigrationContext, schema: &mut Schema) {
@@ -373,7 +371,7 @@ impl Action for AddColumn {
             r#"
             ALTER TABLE "{table}"
             DROP COLUMN IF EXISTS "{column}"
-            "#,
+            "#, // todo: cascade?
             table = self.table,
             column = self.temp_column_name(ctx),
         );

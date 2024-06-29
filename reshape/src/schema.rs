@@ -22,7 +22,7 @@ use crate::db::Connection;
 //
 // Schema provides some schema introspection methods, `get_tables` and `get_table`,
 // which will retrieve the current schema from the database and apply the changes.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Schema {
     table_changes: Vec<TableChanges>,
 }
@@ -73,12 +73,6 @@ impl Schema {
         }
 
         Ok(())
-    }
-}
-
-impl Default for Schema {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -380,11 +374,11 @@ pub async fn create_new_schema_func(db: &mut dyn Connection, target_migration: &
                 setting TEXT := current_setting('reshape.is_new_schema', TRUE);
                 setting_bool BOOLEAN := setting IS NOT NULL AND setting = 'YES';
 			BEGIN
-				RETURN current_setting('search_path') = 'migration_{}' OR setting_bool;
+				RETURN current_setting('search_path') = '{}' OR setting_bool;
 			END
 			$$ language 'plpgsql';
         ",
-        target_migration,
+        crate::schema_name_for_migration(target_migration),
     );
     db.query(&query).await.context("failed creating helper function reshape.is_new_schema()")?;
 

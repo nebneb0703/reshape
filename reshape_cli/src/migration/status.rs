@@ -82,8 +82,6 @@ pub async fn status(
             if diverging {
                 current_migration(4);
 
-                println!("DEBUG: {valid_count}, len: {}", migrations.len());
-
                 for valid_migration in migrations[0..valid_count].iter() {
                     println!("[~]    {}", valid_migration.name);
                 }

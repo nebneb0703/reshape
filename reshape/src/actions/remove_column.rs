@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use anyhow::{anyhow, bail, Context};
 
 use crate::{
-    db::{Connection, Transaction},
+    db::Connection,
     schema::Schema,
     actions::{Action, MigrationContext, common},
 };
@@ -294,7 +294,7 @@ impl Action for RemoveColumn {
         &self,
         ctx: &MigrationContext,
         db: &'a mut dyn Connection,
-    ) -> anyhow::Result<Option<Transaction<'a>>> {
+    ) -> anyhow::Result<()> {
         let indices = common::get_indices_for_column(db, &self.table, &self.column)
             .await.context("failed getting column indices")?;
 
@@ -324,9 +324,7 @@ impl Action for RemoveColumn {
             reverse_trigger_name = self.reverse_trigger_name(ctx),
             null_trigger_name = self.not_null_constraint_trigger_name(ctx),
         );
-        db.run(&query).await.context("failed to drop column and down trigger")?;
-
-        Ok(None)
+        db.run(&query).await.context("failed to drop column and down trigger")
     }
 
     fn update_schema(&self, _ctx: &MigrationContext, schema: &mut Schema) {

@@ -91,50 +91,20 @@ pub async fn complete(
                 action_index + 1,
             );
 
-            // This did_save check is necessary because of the borrow checker.
-            // The Transaction which might be returned from action.complete
-            // contains a mutable reference to self.db. We need the Transaction
-            // to be dropped before we can save the state using self.db instead,
-            // which we achieve here by limiting the lifetime of the Transaction
-            // with a new block.
-            let did_save = {
-                let result = action
-                    .complete(&ctx, db).await
-                    .with_context(|| format!("failed to complete migration {}", migration.name))
-                    .with_context(|| format!("failed to complete action: {}", action));
 
-                let maybe_transaction = match result {
-                    Ok(maybe_transaction) => {
-                        println!("{}", "done".green());
-                        maybe_transaction
-                    }
-                    Err(e) => {
-                        println!("{}", "failed".red());
-                        return Err(e);
-                    }
-                };
+            let result = action
+                .complete(&ctx, db).await
+                .with_context(|| format!("failed to complete migration {}", migration.name))
+                .with_context(|| format!("failed to complete action: {}", action));
 
-                // Update state with which migrations and actions have been completed.
-                // Each action can create and return a transaction if they need atomicity.
-                // We use this transaction to update the state to ensure the action only completes.
-                // once.
-                // We want to use a single transaction for each action to keep the length of
-                // the transaction as short as possible. Wherever possible, we don't want to
-                // use a transaction at all.
-                if let Some(mut transaction) = maybe_transaction {
-                    state.save(&mut transaction).await.context("failed to save state after completing action")?;
-                    transaction.commit().await.context("failed to commit transaction")?;
-
-                    true
-                } else {
-                    false
-                }
-            };
-
-            // If the action didn't return a transaction we save the state normally instead
-            if !did_save {
-                state.save(db).await.context("failed to save state after completing action")?;
+            if let Err(e) = result {
+                println!("{}", "failed".red());
+                    return Err(e);
             }
+
+            println!("{}", "done".green());
+
+            state.save(db).await.context("failed to save state after completing action")?;
         }
 
         println!();
@@ -143,21 +113,10 @@ pub async fn complete(
     // Remove helpers which are no longer in use
     drop_new_schema_func(db).await.context("failed to tear down helpers")?;
 
-    async fn complete_transaction(
-        db: &mut impl Connection,
-        migrations: &[Migration],
-    ) -> anyhow::Result<()> {
-        let mut transaction = db.transaction().await?;
-        save_migrations(&mut transaction, migrations).await?;
-        State::Idle.save(&mut transaction).await?;
-        transaction.commit().await
-    }
+    save_migrations(db, &remaining_migrations).await?;
+    State::Idle.save(db).await?;
 
-    let result = complete_transaction(db, remaining_migrations.as_slice()).await;
+    *state = State::Idle;
 
-    if result.is_ok() {
-        *state = State::Idle;
-    }
-
-    result
+    Ok(())
 }

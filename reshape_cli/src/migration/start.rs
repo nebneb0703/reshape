@@ -160,30 +160,22 @@ pub async fn migrate(
     create_new_schema_func(db, &target_migration).await.context("failed to set up helpers")?;
 
     let mut new_schema = Schema::new();
-    let mut last_migration_index = usize::MAX;
-    let mut last_action_index = usize::MAX;
     let mut result: anyhow::Result<()> = Ok(());
 
-    'outer: for (migration_index, migration) in remaining_migrations.iter().enumerate() {
+    let mut ctx = MigrationContext::new(0, 0, current_migration(db).await?);
+
+    for (migration_index, migration) in remaining_migrations.iter().enumerate() {
+        ctx.migration_index = migration_index;
+
         println!("Migrating '{}':", migration.name);
-        last_migration_index = migration_index;
 
-        for (action_index, action) in migration.actions.iter().enumerate() {
-            last_action_index = action_index;
+        result = migration.migrate(db, &mut ctx, &mut new_schema).await;
 
-            print!("  + {} ", action);
-
-            let ctx = MigrationContext::new(migration_index, action_index, current_migration(db).await?);
-
-            result = action.run(&ctx, db, &new_schema).await.with_context(|| format!("failed to {}", action));
-
-            if result.is_ok() {
-                action.update_schema(&ctx, &mut new_schema);
-                println!("{}", "done".green());
-            } else {
-                println!("{}", "failed".red());
-                break 'outer;
-            }
+        if result.is_ok() {
+            println!("{}", "done".green());
+        } else {
+            println!("{}", "failed".red());
+            break;
         }
 
         println!();
@@ -201,11 +193,11 @@ pub async fn migrate(
         // by running `reshape migration abort`.
         state.aborting(
             remaining_migrations.clone(),
-            last_migration_index + 1,
-            last_action_index + 1,
+            ctx.migration_index,
+            ctx.action_index,
         );
 
-        abort(db, state, Range::Number(remaining_migrations.len() - last_migration_index + 1)).await?;
+        abort(db, state, Range::Number(remaining_migrations.len() - ctx.migration_index)).await?;
 
         return Err(err);
     }

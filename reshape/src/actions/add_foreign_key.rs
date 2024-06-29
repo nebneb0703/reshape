@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use anyhow::Context;
 
 use crate::{
-    db::{Connection, Transaction},
+    db::Connection,
     schema::Schema,
     actions::{Action, common::ForeignKey, MigrationContext},
 };
@@ -83,7 +83,7 @@ impl Action for AddForeignKey {
         &self,
         ctx: &MigrationContext,
         db: &'a mut dyn Connection,
-    ) -> anyhow::Result<Option<Transaction<'a>>> {
+    ) -> anyhow::Result<()> {
         db.run(&format!(
             r#"
             ALTER TABLE {table}
@@ -93,8 +93,7 @@ impl Action for AddForeignKey {
             temp_constraint_name = self.temp_constraint_name(ctx),
             constraint_name = self.final_constraint_name(),
         )).await
-        .context("failed to rename temporary constraint")?;
-        Ok(None)
+        .context("failed to rename temporary constraint")
     }
 
     fn update_schema(&self, _ctx: &MigrationContext, _schema: &mut Schema) {}

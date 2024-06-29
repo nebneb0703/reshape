@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use anyhow::Context;
 
 use crate::{
-    db::{Connection, Transaction},
+    db::Connection,
     schema::Schema,
     actions::{Action, MigrationContext},
 };
@@ -41,7 +41,7 @@ impl Action for RenameTable {
         &self,
         _ctx: &MigrationContext,
         db: &'a mut dyn Connection,
-    ) -> anyhow::Result<Option<Transaction<'a>>> {
+    ) -> anyhow::Result<()> {
         // Rename table
         let query = format!(
             r#"
@@ -51,9 +51,7 @@ impl Action for RenameTable {
             table = self.table,
             new_name = self.new_name,
         );
-        db.run(&query).await.context("failed to rename table")?;
-
-        Ok(None)
+        db.run(&query).await.context("failed to rename table")
     }
 
     fn update_schema(&self, _ctx: &MigrationContext, schema: &mut Schema) {

@@ -7,7 +7,11 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::actions::Action;
+use crate::{
+    actions::{Action, MigrationContext},
+    schema::Schema,
+    db::Connection,
+};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Migration {
@@ -68,6 +72,61 @@ impl Migration {
             description: file.description,
             actions: file.actions,
         })
+    }
+
+    // todo: ensure action index is valid under mutation
+
+    pub async fn migrate(
+        &self,
+        db: &mut impl Connection,
+        ctx: &mut MigrationContext,
+        schema: &mut Schema
+    ) -> anyhow::Result<()> {
+        for (i, action) in self.actions.iter().enumerate().skip(ctx.action_index.saturating_sub(1)) {
+            ctx.action_index = i;
+
+            action.run(ctx, db, schema).await?;
+            action.update_schema(ctx, schema);
+        }
+
+        ctx.migration_index += 1;
+        ctx.action_index = 0;
+
+        Ok(())
+    }
+
+    pub async fn abort(
+        &self,
+        db: &mut impl Connection,
+        ctx: &mut MigrationContext,
+    ) -> anyhow::Result<()> {
+        for (i, action) in self.actions.iter().enumerate().rev().skip(self.actions.len().saturating_sub(ctx.action_index).saturating_sub(1)) {
+            ctx.action_index = i;
+
+            action.abort(ctx, db).await?;
+        }
+
+        ctx.migration_index = ctx.migration_index.saturating_sub(1);
+        ctx.action_index = usize::MAX;
+
+        Ok(())
+    }
+
+    pub async fn complete(
+        &self,
+        db: &mut impl Connection,
+        ctx: &mut MigrationContext,
+    ) -> anyhow::Result<()> {
+        for (i, action) in self.actions.iter().enumerate().skip(ctx.action_index.saturating_sub(1)) {
+            ctx.action_index = i;
+
+            action.complete(ctx, db).await?;
+        }
+
+        ctx.migration_index += 1;
+        ctx.action_index = 0;
+
+        Ok(())
     }
 }
 

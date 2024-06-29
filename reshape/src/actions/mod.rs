@@ -16,7 +16,7 @@ mod remove_foreign_key; pub use remove_foreign_key::RemoveForeignKey;
 use std::fmt::{Debug, Display};
 
 use crate::{
-    db::{Connection, Transaction},
+    db::Connection,
     schema::Schema,
 };
 
@@ -34,7 +34,7 @@ pub trait Action: Debug + Display {
         &self,
         ctx: &MigrationContext,
         db: &'a mut dyn Connection,
-    ) -> anyhow::Result<Option<Transaction<'a>>>;
+    ) -> anyhow::Result<()>;
 
     fn update_schema(&self, ctx: &MigrationContext, schema: &mut Schema);
 
@@ -45,10 +45,11 @@ pub trait Action: Debug + Display {
     ) -> anyhow::Result<()>;
 }
 
+#[derive(Debug, Clone)]
 pub struct MigrationContext {
-    migration_index: usize,
-    action_index: usize,
-    existing_schema_name: Option<String>,
+    pub migration_index: usize,
+    pub action_index: usize,
+    pub existing_schema_name: Option<String>,
 }
 
 impl MigrationContext {

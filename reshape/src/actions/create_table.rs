@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use anyhow::Context;
 
 use crate::{
-    db::{Connection, Transaction},
+    db::Connection,
     schema::Schema,
     actions::{
         Action, MigrationContext, Column,
@@ -201,7 +201,7 @@ impl Action for CreateTable {
         &self,
         ctx: &MigrationContext,
         db: &'a mut dyn Connection,
-    ) -> anyhow::Result<Option<Transaction<'a>>> {
+    ) -> anyhow::Result<()> {
         // Remove triggers and procedures
         let query = format!(
             r#"
@@ -209,9 +209,7 @@ impl Action for CreateTable {
             "#,
             trigger_name = self.trigger_name(ctx),
         );
-        db.run(&query).await.context("failed to drop up trigger")?;
-
-        Ok(None)
+        db.run(&query).await.context("failed to drop up trigger")
     }
 
     fn update_schema(&self, _ctx: &MigrationContext, _schema: &mut Schema) {}

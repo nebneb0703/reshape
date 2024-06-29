@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use anyhow::{anyhow, Context};
 
 use crate::{
-    db::{Connection, Transaction},
+    db::Connection,
     schema::Schema,
     actions::{Action, MigrationContext},
 };
@@ -77,7 +77,7 @@ impl Action for RemoveForeignKey {
         &self,
         _ctx: &MigrationContext,
         db: &'a mut dyn Connection,
-    ) -> anyhow::Result<Option<Transaction<'a>>> {
+    ) -> anyhow::Result<()> {
         db.run(&format!(
             r#"
             ALTER TABLE {table}
@@ -86,8 +86,7 @@ impl Action for RemoveForeignKey {
             table = self.table,
             foreign_key = self.foreign_key,
         )).await
-        .context("failed to remove foreign key")?;
-        Ok(None)
+        .context("failed to remove foreign key")
     }
 
     fn update_schema(&self, _ctx: &MigrationContext, _schema: &mut Schema) {}

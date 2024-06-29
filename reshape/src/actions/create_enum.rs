@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use anyhow::Context;
 
 use crate::{
-    db::{Connection, Transaction},
+    db::Connection,
     schema::Schema,
     actions::{Action, MigrationContext},
 };
@@ -72,8 +72,8 @@ impl Action for CreateEnum {
         &self,
         _ctx: &MigrationContext,
         _db: &'a mut dyn Connection,
-    ) -> anyhow::Result<Option<Transaction<'a>>> {
-        Ok(None)
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
 
     fn update_schema(&self, _ctx: &MigrationContext, _schema: &mut Schema) {}

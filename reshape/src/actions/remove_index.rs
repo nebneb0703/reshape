@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use anyhow::Context;
 
 use crate::{
-    db::{Connection, Transaction},
+    db::Connection,
     schema::Schema,
     actions::{Action, MigrationContext},
 };
@@ -40,16 +40,14 @@ impl Action for RemoveIndex {
         &self,
         _ctx: &MigrationContext,
         db: &'a mut dyn Connection,
-    ) -> anyhow::Result<Option<Transaction<'a>>> {
+    ) -> anyhow::Result<()> {
         db.run(&format!(
             r#"
             DROP INDEX CONCURRENTLY IF EXISTS "{name}"
             "#,
             name = self.index
         )).await
-        .context("failed to drop index")?;
-
-        Ok(None)
+        .context("failed to drop index")
     }
 
     fn update_schema(&self, _ctx: &MigrationContext, _schema: &mut Schema) {}

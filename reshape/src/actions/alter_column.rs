@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use anyhow::{anyhow, Context};
 
 use crate::{
-    db::{Connection, Transaction},
+    db::Connection,
     schema::Schema,
     actions::{Action, MigrationContext, common},
 };
@@ -86,8 +86,6 @@ impl Action for AlterColumn {
             table = self.table,
             temp_column_definition = temp_column_definition_parts.join(" "),
         );
-
-        println!("DEBUG: {query}");
 
         db.run(&query).await.context("failed to add temporary column")?;
 
@@ -219,7 +217,7 @@ impl Action for AlterColumn {
         &self,
         ctx: &MigrationContext,
         db: &'a mut dyn Connection,
-    ) -> anyhow::Result<Option<Transaction<'a>>> {
+    ) -> anyhow::Result<()> {
         if self.can_short_circuit() {
             if let Some(new_name) = &self.changes.name {
                 let query = format!(
@@ -233,7 +231,7 @@ impl Action for AlterColumn {
                 );
                 db.run(&query).await.context("failed to rename column")?;
             }
-            return Ok(None);
+            return Ok(());
         }
 
         // Update column to be NOT NULL if necessary
@@ -364,9 +362,7 @@ impl Action for AlterColumn {
             up_trigger = self.up_trigger_name(ctx),
             down_trigger = self.down_trigger_name(ctx),
         );
-        db.run(&query).await.context("failed to drop up and down triggers")?;
-
-        Ok(None)
+        db.run(&query).await.context("failed to drop up and down triggers")
     }
 
     fn update_schema(&self, ctx: &MigrationContext, schema: &mut Schema) {

@@ -89,8 +89,6 @@ pub trait Connection: Send {
         query: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> anyhow::Result<Vec<Row>>;
-
-    async fn transaction(&mut self) -> anyhow::Result<Transaction>;
 }
 
 pub struct Postgres {
@@ -122,54 +120,6 @@ impl Connection for Postgres {
     ) -> anyhow::Result<Vec<Row>> {
         let rows = retry_automatically(|| self.client.query(query, params)).await?;
         Ok(rows)
-    }
-
-    async fn transaction(&mut self) -> anyhow::Result<Transaction> {
-        let transaction = self.client.transaction().await?;
-        Ok(Transaction { transaction })
-    }
-}
-
-pub struct Transaction<'a> {
-    transaction: postgres::Transaction<'a>,
-}
-
-impl Transaction<'_> {
-    pub async fn commit(self) -> anyhow::Result<()> {
-        self.transaction.commit().await?;
-        Ok(())
-    }
-
-    pub async fn rollback(self) -> anyhow::Result<()> {
-        self.transaction.rollback().await?;
-        Ok(())
-    }
-}
-
-#[async_trait::async_trait]
-impl Connection for Transaction<'_> {
-    async fn run(&mut self, query: &str) -> anyhow::Result<()> {
-        self.transaction.batch_execute(query).await?;
-        Ok(())
-    }
-
-    async fn query(&mut self, query: &str) -> anyhow::Result<Vec<Row>> {
-        let rows = self.transaction.query(query, &[]).await?;
-        Ok(rows)
-    }
-
-    async fn query_with_params(
-        &mut self,
-        query: &str,
-        params: &[&(dyn ToSql + Sync)],
-    ) -> anyhow::Result<Vec<Row>> {
-        let rows = self.transaction.query(query, params).await?;
-        Ok(rows)
-    }
-
-    async fn transaction(&mut self) -> anyhow::Result<Transaction> {
-        let transaction = self.transaction.transaction().await?;
-        Ok(Transaction { transaction })
     }
 }
 

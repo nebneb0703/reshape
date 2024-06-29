@@ -1,7 +1,8 @@
-mod start; use start::migrate;
+mod start; pub use start::migrate;
 mod status;
-mod complete; use complete::complete;
-mod abort; use abort::abort;
+mod complete; pub use complete::complete;
+mod abort; pub use abort::abort;
+// mod clear; pub use clear::clear;
 
 use clap::Parser;
 

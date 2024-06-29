@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use anyhow::Context;
 
 use crate::{
-    db::{Connection, Transaction},
+    db::Connection,
     schema::Schema,
     actions::{Action, MigrationContext},
 };
@@ -39,7 +39,7 @@ impl Action for RemoveTable {
         &self,
         _ctx: &MigrationContext,
         db: &'a mut dyn Connection,
-    ) -> anyhow::Result<Option<Transaction<'a>>> {
+    ) -> anyhow::Result<()> {
         // Remove table
         let query = format!(
             r#"
@@ -47,9 +47,7 @@ impl Action for RemoveTable {
             "#,
             table = self.table,
         );
-        db.run(&query).await.context("failed to drop table")?;
-
-        Ok(None)
+        db.run(&query).await.context("failed to drop table")
     }
 
     fn update_schema(&self, _ctx: &MigrationContext, schema: &mut Schema) {

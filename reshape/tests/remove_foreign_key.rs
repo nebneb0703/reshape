@@ -64,6 +64,7 @@ async fn remove_foreign_key() {
         old_db.simple_query("INSERT INTO users (id) VALUES (1), (2)").await.unwrap();
 
         migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
+        migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
         // Ensure items can't be inserted if they don't reference valid users
         // The foreign key is only removed when the migration is completed so
@@ -82,6 +83,7 @@ async fn remove_foreign_key() {
 
         match task {
             Task::Complete => {
+                complete(&mut reshape, &first_migration, &second_migration).await;
                 complete(&mut reshape, &first_migration, &second_migration).await;
 
                 // Ensure items can be inserted even if they don't reference valid users
@@ -104,6 +106,7 @@ async fn remove_foreign_key() {
                 );
             },
             Task::Abort => {
+                abort(&mut reshape, &first_migration, &second_migration).await;
                 abort(&mut reshape, &first_migration, &second_migration).await;
 
                 // Ensure items can't be inserted if they don't reference valid users

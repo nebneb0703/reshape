@@ -198,7 +198,7 @@ async fn create_table_with_foreign_keys() {
         .collect();
 
     assert_eq!(
-        vec![("user_id".to_string(), "users".to_string(), "id".to_string())],
+        vec![("user_id".to_owned(), "users".to_owned(), "id".to_owned())],
         foreign_key_columns
     );
 }

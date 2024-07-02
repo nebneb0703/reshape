@@ -40,125 +40,114 @@ impl fmt::Display for AddColumn {
 #[typetag::serde(name = "add_column")]
 #[async_trait::async_trait]
 impl Action for AddColumn {
-    async fn run(
+    async fn begin(
         &self,
         ctx: &MigrationContext,
         db: &mut dyn Connection,
         schema: &Schema,
     ) -> anyhow::Result<()> {
         let table = schema.get_table(db, &self.table).await?;
-        let temp_column_name = self.temp_column_name(ctx);
+
+        let quoted_column_name = format!("\"{}\"", self.column.name);
 
         let mut definition_parts = vec![
-            format!("\"{}\"", temp_column_name.to_string()),
-            self.column.data_type.to_string(),
+            quoted_column_name.as_str(),
+            &self.column.data_type,
         ];
 
         if let Some(default) = &self.column.default {
-            definition_parts.push("DEFAULT".to_string());
-            definition_parts.push(default.to_string());
+            definition_parts.push("DEFAULT");
+            definition_parts.push(default);
         }
 
         if let Some(generated) = &self.column.generated {
-            definition_parts.push("GENERATED".to_string());
-            definition_parts.push(generated.to_string());
+            definition_parts.push("GENERATED");
+            definition_parts.push(generated);
         }
 
-        // Add column as NOT NULL
-        let query = format!(
+        // Add column as nullable at this stage regardless of nullability
+        db.run(&format!(
             r#"
-			ALTER TABLE "{table}"
+			ALTER TABLE public."{table}"
             ADD COLUMN IF NOT EXISTS {definition};
 			"#,
-            table = self.table,
+            table = table.real_name,
             definition = definition_parts.join(" "),
-        );
-        db.run(&query).await.context("failed to add column")?;
+        )).await.context("failed to add column")?;
 
-        let declarations: Vec<String> = table
-            .columns
-            .iter()
-            .map(|column| {
-                format!(
-                    "\"{alias}\" public.{table}.{real_name}%TYPE := NEW.{real_name};",
-                    table = table.real_name,
-                    alias = column.name,
-                    real_name = column.real_name,
-                )
-            })
-            .collect();
-
-        if let Some(up) = &self.up {
-            if let Transformation::Simple(up) = up {
-                // Add triggers to fill in values as they are inserted/updated
-                let query = format!(
-                    r#"
-                    CREATE OR REPLACE FUNCTION {trigger_name}()
-                    RETURNS TRIGGER AS $$
-                    BEGIN
-                        IF NOT reshape.is_new_schema() THEN
-                            DECLARE
-                                {declarations}
-                            BEGIN
-                                NEW."{temp_column_name}" = {up};
-                            END;
-                        END IF;
-                        RETURN NEW;
-                    END
-                    $$ language 'plpgsql';
-
-                    DROP TRIGGER IF EXISTS "{trigger_name}" ON "{table}";
-                    CREATE TRIGGER "{trigger_name}" BEFORE UPDATE OR INSERT ON "{table}" FOR EACH ROW EXECUTE PROCEDURE {trigger_name}();
-                    "#,
-                    temp_column_name = temp_column_name,
-                    trigger_name = self.trigger_name(ctx),
-                    up = up,
-                    table = self.table,
-                    declarations = declarations.join("\n"),
-                );
-                db.run(&query).await.context("failed to create up trigger")?;
-
-                // Backfill values in batches
-                common::batch_touch_rows(db, &table.real_name, Some(&temp_column_name))
-                    .await.context("failed to batch update existing rows")?;
-            }
-
-            if let Transformation::Update {
-                table: from_table,
-                value,
-                r#where,
-            } = up
-            {
-                let existing_schema_name = match &ctx.existing_schema_name {
-                    Some(name) => name,
-                    None => bail!("can't use update without previous migration"),
-                };
-
-                let from_table = schema.get_table(db, &from_table).await?;
-
-                let from_table_assignments: Vec<String> = from_table
+        match &self.up {
+            Some(Transformation::Simple(up)) => {
+                // Declare variables so the up query has the expected view into the table
+                let declarations: Vec<String> = table
                     .columns
                     .iter()
                     .map(|column| {
                         format!(
-                            "{table}.{alias} = NEW.{real_name};",
-                            table = from_table.name,
+                            r#"
+                            "{alias}" public."{table}"."{real_name}"%TYPE := NEW."{real_name}";
+                            "#,
                             alias = column.name,
+                            table = table.real_name,
                             real_name = column.real_name,
                         )
                     })
                     .collect();
 
-                // Add triggers to fill in values as they are inserted/updated
-                let query = format!(
+                db.run(&format!(
                     r#"
-                    CREATE OR REPLACE FUNCTION {trigger_name}()
+                    CREATE OR REPLACE FUNCTION "{trigger_name}"()
                     RETURNS TRIGGER AS $$
                     #variable_conflict use_variable
                     BEGIN
                         IF NOT reshape.is_new_schema() THEN
                             DECLARE
-                                {from_table} migration_{existing_schema_name}.{from_table}%ROWTYPE;
+                                {declarations}
+                            BEGIN
+                                NEW."{column}" = {up};
+                            END;
+                        END IF;
+                        RETURN NEW;
+                    END;
+                    $$ language 'plpgsql';
+
+                    DROP TRIGGER IF EXISTS "{trigger_name}" ON public."{table}";
+                    CREATE TRIGGER "{trigger_name}" BEFORE UPDATE OR INSERT ON public."{table}" FOR EACH ROW EXECUTE PROCEDURE "{trigger_name}"();
+                    "#,
+                    trigger_name = self.trigger_name(ctx),
+                    table = table.real_name,
+                    column = self.column.name,
+                    declarations = declarations.join("\n"),
+                )).await.context("failed to create up trigger")?;
+
+                // Backfill values in batches
+                common::batch_touch_rows(db, &table.real_name, Some(&self.column.name))
+                    .await.context("failed to batch update existing rows")?;
+            },
+            Some(Transformation::Update { table: from_table, value, r#where }) => {
+                let from_table = schema.get_table(db, from_table).await?;
+
+                // Declare and assign variables so the query has the expected view into the table
+                let from_table_assignments: Vec<String> = from_table
+                    .columns
+                    .iter()
+                    .map(|column| format!(
+                        r#"
+                        "{table}"."{alias}" = NEW."{real_name}";
+                        "#,
+                        table = from_table.name,
+                        alias = column.name,
+                        real_name = column.real_name,
+                    )).collect();
+
+                db.run(&format!(
+                    r#"
+                    CREATE OR REPLACE FUNCTION "{trigger_name}"()
+                    RETURNS TRIGGER AS $$
+                    #variable_conflict use_variable
+                    BEGIN
+                        IF NOT reshape.is_new_schema() THEN
+                            DECLARE
+                                "{from_table_alias}" public."{from_table_real}"%ROWTYPE;
                             BEGIN
                                 {assignments}
 
@@ -166,33 +155,34 @@ impl Action for AddColumn {
                                 perform set_config('reshape.disable_triggers', 'TRUE', TRUE);
 
                                 UPDATE public."{changed_table_real}"
-                                SET "{temp_column_name}" = {value}
+                                SET "{column}" = {value}
                                 WHERE {where};
 
                                 perform set_config('reshape.disable_triggers', '', TRUE);
                             END;
                         END IF;
                         RETURN NEW;
-                    END
+                    END;
                     $$ language 'plpgsql';
 
-                    DROP TRIGGER IF EXISTS "{trigger_name}" ON "{from_table_real}";
-                    CREATE TRIGGER "{trigger_name}" BEFORE UPDATE OR INSERT ON "{from_table_real}" FOR EACH ROW EXECUTE PROCEDURE {trigger_name}();
+                    DROP TRIGGER IF EXISTS "{trigger_name}" ON public."{from_table_real}";
+                    CREATE TRIGGER "{trigger_name}" BEFORE UPDATE OR INSERT ON public."{from_table_real}" FOR EACH ROW EXECUTE PROCEDURE "{trigger_name}"();
                     "#,
                     assignments = from_table_assignments.join("\n"),
-                    changed_table_real = table.real_name,
-                    from_table = from_table.name,
+                    from_table_alias = from_table.name,
                     from_table_real = from_table.real_name,
+                    changed_table_real = table.real_name,
+                    column = self.column.name,
                     trigger_name = self.trigger_name(ctx),
-                    // declarations = from_table_declarations.join("\n"),
-                    temp_column_name = temp_column_name,
-                );
-                db.run(&query).await.context("failed to create up trigger")?;
+                )).await.context("failed to create up trigger")?;
 
                 let from_table_columns = from_table
                     .columns
                     .iter()
-                    .map(|column| format!("{} as {}", column.real_name, column.name))
+                    .map(|column| format!(
+                        r#"
+                        "{}" AS "{}"
+                        "#, column.real_name, column.name))
                     .collect::<Vec<String>>()
                     .join(", ");
 
@@ -201,7 +191,9 @@ impl Action for AddColumn {
                     .iter()
                     .map(|column| {
                         format!(
-                            "{table}.{alias} := NEW.{real_name};",
+                            r#"
+                            "{table}"."{alias}" := NEW."{real_name}";
+                            "#,
                             table = table.name,
                             alias = column.name,
                             real_name = column.real_name,
@@ -209,159 +201,156 @@ impl Action for AddColumn {
                     })
                     .collect();
 
-                // Add triggers to fill in values as they are inserted/updated
-                let query = format!(
+                db.run(&format!(
                     r#"
-                    CREATE OR REPLACE FUNCTION {trigger_name}()
+                    CREATE OR REPLACE FUNCTION "{reverse_trigger_name}"()
                     RETURNS TRIGGER AS $$
                     #variable_conflict use_variable
                     BEGIN
                         IF NOT reshape.is_new_schema() AND NOT current_setting('reshape.disable_triggers', TRUE) = 'TRUE' THEN
                             DECLARE
-                                {changed_table} migration_{existing_schema_name}.{changed_table}%ROWTYPE;
-                                __temp_row migration_{existing_schema_name}.{from_table}%ROWTYPE;
+                                "{changed_table_alias}" public."{changed_table_real}"%ROWTYPE;
+                                __temp_row public."{from_table_real}"%ROWTYPE;
                             BEGIN
                                 {changed_table_assignments}
 
                                 SELECT {from_table_columns}
-                                INTO __temp_row
-                                FROM migration_{existing_schema_name}.{from_table} {from_table}
+                                INTO "__temp_row"
+                                FROM public."{from_table_real}"
                                 WHERE {where};
 
                                 DECLARE
-                                    {from_table} migration_{existing_schema_name}.{from_table}%ROWTYPE;
+                                    "{from_table_alias}" public."{from_table_real}"%ROWTYPE;
                                 BEGIN
-                                    {from_table} = __temp_row;
-                                    NEW.{temp_column_name} = {value};
+                                    "{from_table_alias}" = __temp_row;
+                                    NEW."{column}" = {value};
                                 END;
                             END;
                         END IF;
                         RETURN NEW;
-                    END
+                    END;
                     $$ language 'plpgsql';
 
-                    DROP TRIGGER IF EXISTS "{trigger_name}" ON "{changed_table_real}";
-                    CREATE TRIGGER "{trigger_name}" BEFORE UPDATE OR INSERT ON "{changed_table_real}" FOR EACH ROW EXECUTE PROCEDURE {trigger_name}();
+                    DROP TRIGGER IF EXISTS "{reverse_trigger_name}" ON public."{changed_table_real}";
+                    CREATE TRIGGER "{reverse_trigger_name}" BEFORE UPDATE OR INSERT ON public."{changed_table_real}" FOR EACH ROW EXECUTE PROCEDURE "{reverse_trigger_name}"();
                     "#,
                     changed_table_assignments = changed_table_assignments.join("\n"),
+                    changed_table_alias = table.name,
                     changed_table_real = table.real_name,
-                    changed_table = table.name,
-                    from_table = from_table.name,
-                    trigger_name = self.reverse_trigger_name(ctx),
-                    temp_column_name = temp_column_name,
-                    // declarations = declarations.join("\n"),
-                );
-                db.run(&query).await.context("failed to create reverse up trigger")?;
+                    from_table_alias = from_table.name,
+                    from_table_real = from_table.real_name,
+                    column = self.column.name,
+                    reverse_trigger_name = self.reverse_trigger_name(ctx),
+                )).await.context("failed to create reverse up trigger")?;
 
                 // Backfill values in batches by touching the from table
                 common::batch_touch_rows(db, &from_table.real_name, None)
                     .await.context("failed to batch update existing rows")?;
-            }
+            },
+            _ => {}
         }
 
         // Add a temporary NOT NULL constraint if the column shouldn't be nullable.
         // This constraint is set as NOT VALID so it doesn't apply to existing rows and
         // the existing rows don't need to be scanned under an exclusive lock.
         // Thanks to this, we can set the full column as NOT NULL later with minimal locking.
-
-        // todo: this is not idempotent
         if !self.column.nullable {
-            let query = format!(
+            db.run(&format!(
                 r#"
-                 ALTER TABLE "{table}"
-                 ADD CONSTRAINT "{constraint_name}"
-                 CHECK ("{column}" IS NOT NULL) NOT VALID
-                 "#,
-                table = self.table,
+                DO $$
+                BEGIN
+                    ALTER TABLE public."{table}"
+                    ADD CONSTRAINT "{constraint_name}"
+                    CHECK ("{column}" IS NOT NULL) NOT VALID;
+                EXCEPTION
+                    -- Ignore duplicate constraint. This is necessary as
+                    -- postgres does not support "IF NOT EXISTS" here.
+                    WHEN duplicate_object THEN
+                END;
+                $$ language 'plpgsql';
+                "#,
+                table = table.real_name,
                 constraint_name = self.not_null_constraint_name(ctx),
-                column = temp_column_name,
-            );
-
-            db.run(&query).await.context("failed to add NOT NULL constraint")?;
+                column = self.column.name,
+            )).await.context("failed to add NOT NULL constraint")?;
         }
 
         Ok(())
     }
 
-    async fn complete<'a>(
+    async fn complete(
         &self,
         ctx: &MigrationContext,
-        db: &'a mut dyn Connection,
+        db: &mut dyn Connection,
     ) -> anyhow::Result<()> {
-        // Remove triggers and procedures
-        let query = format!(
+        db.run(&format!(
             r#"
             DROP FUNCTION IF EXISTS "{trigger_name}" CASCADE;
             DROP FUNCTION IF EXISTS "{reverse_trigger_name}" CASCADE;
             "#,
             trigger_name = self.trigger_name(ctx),
             reverse_trigger_name = self.reverse_trigger_name(ctx),
-        );
-        db.run(&query).await.context("failed to drop up trigger")?;
-
-        // todo: make idempotent
+        )).await.context("failed to drop up trigger")?;
 
         // Update column to be NOT NULL if necessary
         if !self.column.nullable {
             // Validate the temporary constraint (should always be valid).
             // This performs a sequential scan but does not take an exclusive lock.
-            let query = format!(
+            db.run(&format!(
                 r#"
-                ALTER TABLE "{table}"
-                VALIDATE CONSTRAINT "{constraint_name}"
+                DO $$
+                BEGIN
+                    ALTER TABLE "{table}"
+                    VALIDATE CONSTRAINT "{constraint_name}";
+                EXCEPTION
+                    -- Ignore if constraint does not exist. This is necessary as
+                    -- postgres does not support "IF EXISTS" here.
+                    WHEN undefined_object THEN
+                END;
+                $$ language 'plpgsql';
                 "#,
                 table = self.table,
                 constraint_name = self.not_null_constraint_name(ctx),
-            );
-            db.run(&query).await.context("failed to validate NOT NULL constraint")?;
+            )).await.context("failed to validate NOT NULL constraint")?;
 
             // Update the column to be NOT NULL.
             // This requires an exclusive lock but since PG 12 it can check
             // the existing constraint for correctness which makes the lock short-lived.
             // Source: https://dba.stackexchange.com/a/268128
-            let query = format!(
+            db.run(&format!(
                 r#"
-                ALTER TABLE "{table}"
-                ALTER COLUMN "{column}" SET NOT NULL
+                DO $$
+                BEGIN
+                    ALTER TABLE "{table}"
+                    ALTER COLUMN "{column}" SET NOT NULL;
+                EXCEPTION
+                    -- Ignore if column does not exist. This is necessary as
+                    -- postgres does not support "IF EXISTS" here.
+                    WHEN undefined_column THEN
+                END;
+                $$ language 'plpgsql';
                 "#,
                 table = self.table,
-                column = self.temp_column_name(ctx),
-            );
-            db.run(&query).await.context("failed to set column as NOT NULL")?;
+                column = self.column.name,
+            )).await.context("failed to set column as NOT NULL")?;
 
             // Drop the temporary constraint
-            let query = format!(
+            db.run(&format!(
                 r#"
                 ALTER TABLE "{table}"
-                DROP CONSTRAINT "{constraint_name}"
+                DROP CONSTRAINT IF EXISTS "{constraint_name}"
                 "#,
                 table = self.table,
                 constraint_name = self.not_null_constraint_name(ctx),
-            );
-            db.run(&query).await.context("failed to drop NOT NULL constraint")?;
+            )).await.context("failed to drop NOT NULL constraint")?;
         }
-
-        // Rename the temporary column to its real name
-        db
-            .run(&format!(
-                r#"
-                ALTER TABLE "{table}"
-                RENAME COLUMN "{temp_column_name}" TO "{column_name}"
-                "#,
-                table = self.table,
-                temp_column_name = self.temp_column_name(ctx),
-                column_name = self.column.name,
-            )).await
-            .context("failed to rename column to final name")?;
 
         Ok(())
     }
 
-    fn update_schema(&self, ctx: &MigrationContext, schema: &mut Schema) {
+    fn update_schema(&self, _ctx: &MigrationContext, schema: &mut Schema) {
         schema.change_table(&self.table, |table_changes| {
-            table_changes.change_column(&self.column.name, |column_changes| {
-                column_changes.set_column(&self.temp_column_name(ctx));
-            })
+            table_changes.change_column(&self.column.name, |_| {})
         });
     }
 
@@ -373,7 +362,7 @@ impl Action for AddColumn {
             DROP COLUMN IF EXISTS "{column}"
             "#, // todo: cascade?
             table = self.table,
-            column = self.temp_column_name(ctx),
+            column = self.column.name,
         );
         db.run(&query).await.context("failed to drop column")?;
 
@@ -393,15 +382,6 @@ impl Action for AddColumn {
 }
 
 impl AddColumn {
-    fn temp_column_name(&self, ctx: &MigrationContext) -> String {
-        format!(
-            "{}_temp_column_{}_{}",
-            ctx.prefix(),
-            self.table,
-            self.column.name,
-        )
-    }
-
     fn trigger_name(&self, ctx: &MigrationContext) -> String {
         format!(
             "{}_add_column_{}_{}",

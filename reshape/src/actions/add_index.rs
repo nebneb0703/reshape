@@ -38,7 +38,7 @@ impl fmt::Display for AddIndex {
 #[typetag::serde(name = "add_index")]
 #[async_trait::async_trait]
 impl Action for AddIndex {
-    async fn run(
+    async fn begin(
         &self,
         _ctx: &MigrationContext,
         db: &mut dyn Connection,
@@ -57,25 +57,25 @@ impl Action for AddIndex {
         let index_type_def = if let Some(index_type) = &self.index.index_type {
             format!("USING {index_type}")
         } else {
-            "".to_string()
+            "".to_owned()
         };
 
         db.run(&format!(
             r#"
-			CREATE {unique} INDEX CONCURRENTLY "{name}" ON "{table}" {index_type_def} ({columns})
+			CREATE {unique} INDEX CONCURRENTLY IF NOT EXISTS "{name}" ON "{table}" {index_type_def} ({columns})
 			"#,
             name = self.index.name,
             table = self.table,
             columns = column_real_names.join(", "),
-        )).await
-        .context("failed to create index")?;
+        )).await.context("failed to create index")?;
+
         Ok(())
     }
 
-    async fn complete<'a>(
+    async fn complete(
         &self,
         _ctx: &MigrationContext,
-        _db: &'a mut dyn Connection,
+        _db: &mut dyn Connection,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -88,8 +88,8 @@ impl Action for AddIndex {
 			DROP INDEX CONCURRENTLY IF EXISTS "{name}"
 			"#,
             name = self.index.name,
-        )).await
-        .context("failed to drop index")?;
+        )).await.context("failed to drop index")?;
+
         Ok(())
     }
 }

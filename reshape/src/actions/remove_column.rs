@@ -41,7 +41,7 @@ impl fmt::Display for RemoveColumn {
 #[typetag::serde(name = "remove_column")]
 #[async_trait::async_trait]
 impl Action for RemoveColumn {
-    async fn run(
+    async fn begin(
         &self,
         ctx: &MigrationContext,
         db: &mut dyn Connection,
@@ -162,7 +162,7 @@ impl Action for RemoveColumn {
                         column_name = self.column,
                     )
                 } else {
-                    "".to_string()
+                    "".to_owned()
                 };
 
                 let into_variables = from_table
@@ -290,10 +290,10 @@ impl Action for RemoveColumn {
         Ok(())
     }
 
-    async fn complete<'a>(
+    async fn complete(
         &self,
         ctx: &MigrationContext,
-        db: &'a mut dyn Connection,
+        db: &mut dyn Connection,
     ) -> anyhow::Result<()> {
         let indices = common::get_indices_for_column(db, &self.table, &self.column)
             .await.context("failed getting column indices")?;

@@ -53,7 +53,9 @@ async fn remove_enum() {
     assert!(enum_exists, "expected mood enum to have been created");
 
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
+    complete(&mut reshape, &first_migration, &second_migration).await;
     complete(&mut reshape, &first_migration, &second_migration).await;
 
     // Ensure enum was removed after completion

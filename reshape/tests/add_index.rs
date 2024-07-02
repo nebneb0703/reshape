@@ -49,6 +49,7 @@ async fn add_index() {
     setup_db(&mut reshape, &mut old_db, &first_migration).await;
 
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
     // Ensure index is valid and ready
     let (is_ready, is_valid): (bool, bool) = old_db
@@ -69,6 +70,7 @@ async fn add_index() {
     assert!(is_ready, "expected index to be ready");
     assert!(is_valid, "expected index to be valid");
 
+    complete(&mut reshape, &first_migration, &second_migration).await;
     complete(&mut reshape, &first_migration, &second_migration).await;
 
     // Ensure index is valid and ready
@@ -135,6 +137,7 @@ async fn add_index_unique() {
 
     setup_db(&mut reshape, &mut old_db, &first_migration).await;
 
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
     // Ensure index is valid, ready and unique
@@ -208,6 +211,7 @@ async fn add_index_with_type() {
 
     setup_db(&mut reshape, &mut old_db, &first_migration).await;
 
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
     // Ensure index is valid, ready and has the right type

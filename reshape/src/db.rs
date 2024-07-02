@@ -124,7 +124,8 @@ impl Connection for Postgres {
 }
 
 // Retry a database operation with exponential backoff and jitter
-async fn retry_automatically<T, F, Fut>(mut f: F) -> Result<T, postgres::Error> where
+async fn retry_automatically<T, F, Fut>(mut f: F) -> Result<T, postgres::Error>
+where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, postgres::Error>>
 {

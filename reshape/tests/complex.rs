@@ -88,6 +88,7 @@ async fn move_column_between_tables() {
     old_db.simple_query("INSERT INTO profiles (id, user_id) VALUES (2, 2)").await.unwrap();
 
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
     // Ensure emails were backfilled into profiles
     let profiles_emails: Vec<String> = new_db
@@ -254,6 +255,7 @@ async fn extract_relation_into_new_table() {
     old_db.simple_query("INSERT INTO accounts (id) VALUES (1)").await.unwrap();
     old_db.simple_query("INSERT INTO users (id, account_id, account_role) VALUES (1, 1, 'admin')").await.unwrap();
 
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
     // Ensure connections was backfilled

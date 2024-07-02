@@ -58,6 +58,7 @@ async fn alter_column_data() {
     .unwrap();
 
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
     // Check that the existing users has the altered data
     let expected = vec!["JOHN DOE", "JANE DOE"];
@@ -148,6 +149,7 @@ async fn alter_column_set_not_null() {
         .unwrap();
 
         migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
+        migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
         // Check that existing users got the correct values
         let expected = vec!["John Doe", "TEST_DEFAULT_VALUE"];
@@ -189,12 +191,14 @@ async fn alter_column_set_not_null() {
         match task {
             Task::Complete => {
                 complete(&mut reshape, &first_migration, &second_migration).await;
+                complete(&mut reshape, &first_migration, &second_migration).await;
 
                 // Ensure NULL can't be inserted
                 let result = new_db.simple_query("INSERT INTO users (id, name) VALUES (5, NULL)").await;
                 assert!(result.is_err(), "expected insert to fail");
             },
             Task::Abort => {
+                abort(&mut reshape, &first_migration, &second_migration).await;
                 abort(&mut reshape, &first_migration, &second_migration).await;
 
                 // Ensure NULL can be inserted
@@ -261,6 +265,7 @@ async fn alter_column_set_nullable() {
         .unwrap();
 
         migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
+        migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
         // Insert data using new schema and make sure the old schema gets correct values
         new_db
@@ -284,12 +289,14 @@ async fn alter_column_set_nullable() {
         match task {
             Task::Complete => {
                 complete(&mut reshape, &first_migration, &second_migration).await;
+                complete(&mut reshape, &first_migration, &second_migration).await;
 
                 // Ensure NULL can be inserted
                 let result = new_db.simple_query("INSERT INTO users (id, name) VALUES (5, NULL)").await;
                 assert!(result.is_ok(), "expected insert to succeed");
             },
             Task::Abort => {
+                abort(&mut reshape, &first_migration, &second_migration).await;
                 abort(&mut reshape, &first_migration, &second_migration).await;
 
                 // Ensure NULL can't be inserted
@@ -353,6 +360,7 @@ async fn alter_column_rename() {
     ).await
     .unwrap();
 
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
     // Check that existing values can be queried using new column name
@@ -426,6 +434,7 @@ async fn alter_column_multiple() {
     ).await
     .unwrap();
 
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
     // Check that the existing data has been updated
@@ -524,6 +533,7 @@ async fn alter_column_default() {
     .unwrap();
 
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
     // Check that the existing users has the old default value
     let expected = vec!["DEFAULT"];
@@ -613,7 +623,9 @@ async fn alter_column_with_index() {
     setup_db(&mut reshape, &mut old_db, &first_migration).await;
 
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
+    complete(&mut reshape, &first_migration, &second_migration).await;
     complete(&mut reshape, &first_migration, &second_migration).await;
 
     // Make sure index still exists
@@ -688,6 +700,7 @@ async fn alter_column_with_unique_index() {
     old_db.simple_query("INSERT INTO users (id, name) VALUES (1, 'Test')").await.unwrap();
 
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
     // Try inserting a value which duplicates the uppercase value of an existing row
     let result = new_db.simple_query("INSERT INTO users (id, name) VALUES (2, 'TEST')").await;
@@ -707,6 +720,7 @@ async fn alter_column_with_unique_index() {
         "expected duplicate insert to old schema to fail"
     );
 
+    complete(&mut reshape, &first_migration, &second_migration).await;
     complete(&mut reshape, &first_migration, &second_migration).await;
 
     // Make sure index still exists
@@ -779,7 +793,9 @@ async fn alter_column_with_hash_index() {
     setup_db(&mut reshape, &mut old_db, &first_migration).await;
 
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
+    complete(&mut reshape, &first_migration, &second_migration).await;
     complete(&mut reshape, &first_migration, &second_migration).await;
 
     // Make sure index still has type GIN

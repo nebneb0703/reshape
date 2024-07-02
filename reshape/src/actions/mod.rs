@@ -20,20 +20,25 @@ use crate::{
     schema::Schema,
 };
 
+// todo: some kind of type state to enforce this behaviour at compile time.
+
+/// A migration action.
+///
+/// Actions are begun and completed in order. Actions are aborted in reverse order.
 #[typetag::serde(tag = "type")]
 #[async_trait::async_trait]
 pub trait Action: Debug + Display {
-    async fn run(
+    async fn begin(
         &self,
         ctx: &MigrationContext,
         db: &mut dyn Connection,
-        schema: &Schema
+        schema: &Schema,
     ) -> anyhow::Result<()>;
 
-    async fn complete<'a>(
+    async fn complete(
         &self,
         ctx: &MigrationContext,
-        db: &'a mut dyn Connection,
+        db: &mut dyn Connection,
     ) -> anyhow::Result<()>;
 
     fn update_schema(&self, ctx: &MigrationContext, schema: &mut Schema);
@@ -41,7 +46,7 @@ pub trait Action: Debug + Display {
     async fn abort(
         &self,
         ctx: &MigrationContext,
-        db: &mut dyn Connection
+        db: &mut dyn Connection,
     ) -> anyhow::Result<()>;
 }
 

@@ -27,7 +27,7 @@ impl fmt::Display for CreateEnum {
 #[typetag::serde(name = "create_enum")]
 #[async_trait::async_trait]
 impl Action for CreateEnum {
-    async fn run(
+    async fn begin(
         &self,
         _ctx: &MigrationContext,
         db: &mut dyn Connection,
@@ -68,10 +68,10 @@ impl Action for CreateEnum {
         Ok(())
     }
 
-    async fn complete<'a>(
+    async fn complete(
         &self,
         _ctx: &MigrationContext,
-        _db: &'a mut dyn Connection,
+        _db: &mut dyn Connection,
     ) -> anyhow::Result<()> {
         Ok(())
     }

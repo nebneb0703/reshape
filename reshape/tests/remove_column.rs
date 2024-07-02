@@ -128,7 +128,9 @@ async fn remove_column_with_index() {
     setup_db(&mut reshape, &mut old_db, &first_migration).await;
 
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
+    complete(&mut reshape, &first_migration, &second_migration).await;
     complete(&mut reshape, &first_migration, &second_migration).await;
 
     // Ensure index has been removed after the migration is complete
@@ -211,6 +213,7 @@ async fn remove_column_with_complex_down() {
     old_db.simple_query("INSERT INTO users (id, email) VALUES (1, 'test@example.com')").await.unwrap();
     old_db.simple_query("INSERT INTO profiles (user_id, email) VALUES (1, 'test@example.com')").await.unwrap();
 
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
     new_db.simple_query("UPDATE profiles SET email = 'test2@example.com' WHERE user_id = 1").await.unwrap();

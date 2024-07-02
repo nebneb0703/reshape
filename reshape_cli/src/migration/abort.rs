@@ -77,7 +77,7 @@ pub async fn abort(
     };
 
     // Remove new migration's schema
-    let target_migration = remaining_migrations.last().unwrap().name.to_string();
+    let target_migration = &remaining_migrations.last().unwrap().name;
     let schema_name = schema_name_for_migration(&target_migration);
     db.run(&format!("DROP SCHEMA IF EXISTS {} CASCADE", schema_name,))
         .await.with_context(|| format!("failed to drop schema {}", schema_name))?;

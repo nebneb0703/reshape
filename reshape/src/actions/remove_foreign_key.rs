@@ -28,7 +28,7 @@ impl fmt::Display for RemoveForeignKey {
 #[typetag::serde(name = "remove_foreign_key")]
 #[async_trait::async_trait]
 impl Action for RemoveForeignKey {
-    async fn run(
+    async fn begin(
         &self,
         _ctx: &MigrationContext,
         db: &mut dyn Connection,
@@ -73,10 +73,10 @@ impl Action for RemoveForeignKey {
         Ok(())
     }
 
-    async fn complete<'a>(
+    async fn complete(
         &self,
         _ctx: &MigrationContext,
-        db: &'a mut dyn Connection,
+        db: &mut dyn Connection,
     ) -> anyhow::Result<()> {
         db.run(&format!(
             r#"

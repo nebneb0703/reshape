@@ -29,7 +29,7 @@ impl fmt::Display for Custom {
 #[typetag::serde(name = "custom")]
 #[async_trait::async_trait]
 impl Action for Custom {
-    async fn run(
+    async fn begin(
         &self,
         _ctx: &MigrationContext,
         db: &mut dyn Connection,
@@ -43,10 +43,10 @@ impl Action for Custom {
         Ok(())
     }
 
-    async fn complete<'a>(
+    async fn complete(
         &self,
         _ctx: &MigrationContext,
-        db: &'a mut dyn Connection,
+        db: &mut dyn Connection,
     ) -> anyhow::Result<()> {
         if let Some(complete_query) = &self.complete {
             db.run(complete_query).await?;

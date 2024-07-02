@@ -26,7 +26,7 @@ impl fmt::Display for RemoveTable {
 #[typetag::serde(name = "remove_table")]
 #[async_trait::async_trait]
 impl Action for RemoveTable {
-    async fn run(
+    async fn begin(
         &self,
         _ctx: &MigrationContext,
         _db: &mut dyn Connection,
@@ -35,10 +35,10 @@ impl Action for RemoveTable {
         Ok(())
     }
 
-    async fn complete<'a>(
+    async fn complete(
         &self,
         _ctx: &MigrationContext,
-        db: &'a mut dyn Connection,
+        db: &mut dyn Connection,
     ) -> anyhow::Result<()> {
         // Remove table
         let query = format!(

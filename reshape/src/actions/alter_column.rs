@@ -41,7 +41,7 @@ impl fmt::Display for AlterColumn {
 #[typetag::serde(name = "alter_column")]
 #[async_trait::async_trait]
 impl Action for AlterColumn {
-    async fn run(
+    async fn begin(
         &self,
         ctx: &MigrationContext,
         db: &mut dyn Connection,
@@ -80,10 +80,10 @@ impl Action for AlterColumn {
 
         let query = format!(
             r#"
-			ALTER TABLE "{table}"
+			ALTER TABLE public."{table}"
             ADD COLUMN IF NOT EXISTS {temp_column_definition}
 			"#,
-            table = self.table,
+            table = table.real_name,
             temp_column_definition = temp_column_definition_parts.join(" "),
         );
 
@@ -170,7 +170,7 @@ impl Action for AlterColumn {
                 .map(|idx_column| {
                     // Replace column with temporary column for new index
                     if idx_column == column.real_name {
-                        temporary_column_name.to_string()
+                        temporary_column_name.clone()
                     } else {
                         idx_column
                     }
@@ -213,10 +213,10 @@ impl Action for AlterColumn {
         Ok(())
     }
 
-    async fn complete<'a>(
+    async fn complete(
         &self,
         ctx: &MigrationContext,
-        db: &'a mut dyn Connection,
+        db: &mut dyn Connection,
     ) -> anyhow::Result<()> {
         if self.can_short_circuit() {
             if let Some(new_name) = &self.changes.name {
@@ -372,7 +372,7 @@ impl Action for AlterColumn {
             if let Some(new_name) = &self.changes.name {
                 schema.change_table(&self.table, |table_changes| {
                     table_changes.change_column(&self.column, |column_changes| {
-                        column_changes.set_name(new_name);
+                        column_changes.set_name(new_name.clone());
                     });
                 });
             }
@@ -381,8 +381,15 @@ impl Action for AlterColumn {
         }
 
         schema.change_table(&self.table, |table_changes| {
+            // "Remove" the old column and create a new column, using the temporary name
+            // as the real name, and using the new name as the alias.
+
             table_changes.change_column(&self.column, |column_changes| {
-                column_changes.set_column(&self.temporary_column_name(ctx));
+                column_changes.set_removed();
+            });
+
+            table_changes.change_column(&self.temporary_column_name(ctx), |column_changes| {
+                column_changes.set_name(self.changes.name.clone().unwrap_or(self.column.clone()));
             });
         });
     }

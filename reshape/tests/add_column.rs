@@ -73,6 +73,7 @@ async fn add_column() {
         ).await.unwrap();
 
         migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
+        migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
         // Check that the existing users have the new columns populated
         let expected = vec![("John", "Doe"), ("Jane", "Doe")];
@@ -104,6 +105,7 @@ async fn add_column() {
         match task {
             Task::Complete => {
                 complete(&mut reshape, &first_migration, &second_migration).await;
+                complete(&mut reshape, &first_migration, &second_migration).await;
 
                 let expected = vec![("John", "Doe"), ("Jane", "Doe"), ("Test", "Testsson")];
                 assert!(new_db
@@ -115,6 +117,7 @@ async fn add_column() {
                     .eq(expected));
             },
             Task::Abort => {
+                abort(&mut reshape, &first_migration, &second_migration).await;
                 abort(&mut reshape, &first_migration, &second_migration).await;
 
                 let expected = vec![("John Doe"), ("Jane Doe"), ("Test Testsson")];
@@ -177,6 +180,7 @@ async fn add_column_nullable() {
     ).await.unwrap();
 
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
     // Ensure existing data got updated
     let expected: Vec<Option<String>> = vec![None, None];
@@ -207,9 +211,10 @@ async fn add_column_nullable() {
         .unwrap();
 
     complete(&mut reshape, &first_migration, &second_migration).await;
+    complete(&mut reshape, &first_migration, &second_migration).await;
 
     let expected: Vec<Option<String>> =
-        vec![None, None, None, Some("Test Testsson".to_string()), None];
+        vec![None, None, None, Some("Test Testsson".to_owned()), None];
     let result: Vec<Option<String>> = new_db
         .query("SELECT id, name FROM users ORDER BY id", &[])
         .await
@@ -266,10 +271,10 @@ async fn add_column_with_default() {
     old_db.simple_query("INSERT INTO users (id) VALUES (1), (2)").await.unwrap();
 
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
-
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
     // Ensure existing data got updated with defaults
-    let expected = vec!["DEFAULT".to_string(), "DEFAULT".to_string()];
+    let expected = vec!["DEFAULT", "DEFAULT"];
     assert!(new_db
         .query("SELECT name FROM users ORDER BY id", &[],)
         .await
@@ -352,6 +357,7 @@ async fn add_column_with_complex_up() {
     old_db.simple_query("INSERT INTO users (id, email) VALUES (1, 'test@example.com')").await.unwrap();
     old_db.simple_query("INSERT INTO profiles (user_id) VALUES (1)").await.unwrap();
 
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
     // Ensure email was backfilled on profiles

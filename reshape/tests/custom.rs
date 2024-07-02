@@ -56,6 +56,7 @@ async fn custom_enable_extension() {
         setup_db(&mut reshape, &mut old_db, &first_migration).await;
 
         migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
+        migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
         let bloom_activated = !old_db
             .query("SELECT * FROM pg_extension WHERE extname = 'bloom'", &[])
@@ -85,6 +86,7 @@ async fn custom_enable_extension() {
         match task {
             Task::Complete => {
                 complete(&mut reshape, &first_migration, &second_migration).await;
+                complete(&mut reshape, &first_migration, &second_migration).await;
 
                 let bloom_activated = !new_db
                     .query("SELECT * FROM pg_extension WHERE extname = 'bloom'", &[])
@@ -112,6 +114,7 @@ async fn custom_enable_extension() {
                 assert!(btree_gist_activated);
             },
             Task::Abort => {
+                abort(&mut reshape, &first_migration, &second_migration).await;
                 abort(&mut reshape, &first_migration, &second_migration).await;
 
                 let bloom_activated = !old_db

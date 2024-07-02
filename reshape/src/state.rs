@@ -125,7 +125,7 @@ impl State {
         ).await?;
 
         // Update the current version
-        let encoded_version = serde_json::to_value(version!().to_string())?;
+        let encoded_version = serde_json::to_value(version!().to_owned())?;
         db.query_with_params(
             "
             INSERT INTO reshape.data (key, value)

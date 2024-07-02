@@ -156,7 +156,7 @@ pub async fn migrate(
 
     println!("Applying {} migrations\n", remaining_migrations.len());
 
-    let target_migration = remaining_migrations.last().unwrap().name.to_string();
+    let target_migration = remaining_migrations.last().unwrap().name.clone();
     create_new_schema_func(db, &target_migration).await.context("failed to set up helpers")?;
 
     let mut new_schema = Schema::new();

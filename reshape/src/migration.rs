@@ -85,7 +85,7 @@ impl Migration {
         for (i, action) in self.actions.iter().enumerate().skip(ctx.action_index.saturating_sub(1)) {
             ctx.action_index = i;
 
-            action.run(ctx, db, schema).await?;
+            action.begin(ctx, db, schema).await?;
             action.update_schema(ctx, schema);
         }
 

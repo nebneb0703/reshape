@@ -122,7 +122,7 @@ pub async fn batch_touch_rows(
                 primary_key_columns = primary_key_columns
             )
         } else {
-            "".to_string()
+            "".to_owned()
         };
 
         let query = format!(

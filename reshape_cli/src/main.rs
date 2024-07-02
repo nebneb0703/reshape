@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
             // let query = migrations
             //     .last()
             //     .map(|migration| reshape::schema_query_for_migration(&migration.name));
-            // println!("{}", query.unwrap_or_else(|| "".to_string()));
+            // println!("{}", query.unwrap_or(""));
 
             // Ok(())
         },

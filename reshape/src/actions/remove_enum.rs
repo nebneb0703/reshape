@@ -27,7 +27,7 @@ impl fmt::Display for RemoveEnum {
 #[typetag::serde(name = "remove_enum")]
 #[async_trait::async_trait]
 impl Action for RemoveEnum {
-    async fn run(
+    async fn begin(
         &self,
         _ctx: &MigrationContext,
         _db: &mut dyn Connection,
@@ -36,10 +36,10 @@ impl Action for RemoveEnum {
         Ok(())
     }
 
-    async fn complete<'a>(
+    async fn complete(
         &self,
         _ctx: &MigrationContext,
-        db: &'a mut dyn Connection,
+        db: &mut dyn Connection,
     ) -> anyhow::Result<()> {
         db.run(&format!(
             r#"

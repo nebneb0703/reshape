@@ -28,7 +28,7 @@ impl fmt::Display for RenameTable {
 #[typetag::serde(name = "rename_table")]
 #[async_trait::async_trait]
 impl Action for RenameTable {
-    async fn run(
+    async fn begin(
         &self,
         _ctx: &MigrationContext,
         _db: &mut dyn Connection,
@@ -37,10 +37,10 @@ impl Action for RenameTable {
         Ok(())
     }
 
-    async fn complete<'a>(
+    async fn complete(
         &self,
         _ctx: &MigrationContext,
-        db: &'a mut dyn Connection,
+        db: &mut dyn Connection,
     ) -> anyhow::Result<()> {
         // Rename table
         let query = format!(
@@ -56,7 +56,7 @@ impl Action for RenameTable {
 
     fn update_schema(&self, _ctx: &MigrationContext, schema: &mut Schema) {
         schema.change_table(&self.table, |table_changes| {
-            table_changes.set_name(&self.new_name);
+            table_changes.set_name(self.new_name.clone());
         });
     }
 

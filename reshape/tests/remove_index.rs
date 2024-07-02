@@ -53,6 +53,7 @@ async fn remove_index() {
     setup_db(&mut reshape, &mut old_db, &first_migration).await;
 
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
     // Ensure index is still valid and ready during the migration
     let result: Vec<(bool, bool)> = old_db
@@ -72,6 +73,7 @@ async fn remove_index() {
 
     assert_eq!([(true, true)].as_slice(), result.as_slice());
 
+    complete(&mut reshape, &first_migration, &second_migration).await;
     complete(&mut reshape, &first_migration, &second_migration).await;
 
     // Ensure index has been removed after the migration is complete

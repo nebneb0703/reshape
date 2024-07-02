@@ -22,7 +22,7 @@ use crate::db::Connection;
 //
 // Schema provides some schema introspection methods, `get_tables` and `get_table`,
 // which will retrieve the current schema from the database and apply the changes.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)] // todo: reconsider Clone
 pub struct Schema {
     table_changes: Vec<TableChanges>,
 }
@@ -34,10 +34,7 @@ impl Schema {
         }
     }
 
-    pub fn change_table<F>(&mut self, current_name: &str, f: F)
-    where
-        F: FnOnce(&mut TableChanges),
-    {
+    pub fn change_table(&mut self, current_name: &str, f: impl FnOnce(&mut TableChanges)) {
         let table_change_index = self
             .table_changes
             .iter()
@@ -74,105 +71,7 @@ impl Schema {
 
         Ok(())
     }
-}
 
-#[derive(Debug)]
-pub struct TableChanges {
-    current_name: String,
-    real_name: String,
-    column_changes: Vec<ColumnChanges>,
-    removed: bool,
-}
-
-impl TableChanges {
-    fn new(name: String) -> Self {
-        Self {
-            current_name: name.to_string(),
-            real_name: name,
-            column_changes: Vec::new(),
-            removed: false,
-        }
-    }
-
-    pub fn set_name(&mut self, name: &str) {
-        self.current_name = name.to_string();
-    }
-
-    pub fn change_column<F>(&mut self, current_name: &str, f: F)
-    where
-        F: FnOnce(&mut ColumnChanges),
-    {
-        let column_change_index = self
-            .column_changes
-            .iter()
-            .position(|column| column.current_name == current_name)
-            .unwrap_or_else(|| {
-                let new_changes = ColumnChanges::new(current_name.to_string());
-                self.column_changes.push(new_changes);
-                self.column_changes.len() - 1
-            });
-
-        let column_changes = &mut self.column_changes[column_change_index];
-        f(column_changes)
-    }
-
-    pub fn set_removed(&mut self) {
-        self.removed = true;
-    }
-}
-
-#[derive(Debug)]
-pub struct ColumnChanges {
-    current_name: String,
-    backing_columns: Vec<String>,
-    removed: bool,
-}
-
-impl ColumnChanges {
-    fn new(name: String) -> Self {
-        Self {
-            current_name: name.to_string(),
-            backing_columns: vec![name],
-            removed: false,
-        }
-    }
-
-    pub fn set_name(&mut self, name: &str) {
-        self.current_name = name.to_string();
-    }
-
-    pub fn set_column(&mut self, column_name: &str) {
-        self.backing_columns.push(column_name.to_string())
-    }
-
-    pub fn set_removed(&mut self) {
-        self.removed = true;
-    }
-
-    fn real_name(&self) -> &str {
-        self.backing_columns
-            .last()
-            .expect("backing_columns should never be empty")
-    }
-}
-
-#[derive(Debug)]
-pub struct Table {
-    pub name: String,
-    pub real_name: String,
-    pub columns: Vec<Column>,
-}
-
-#[derive(Debug)]
-pub struct Column {
-    pub name: String,
-    pub real_name: String,
-    pub data_type: String,
-    pub nullable: bool,
-    pub default: Option<String>,
-}
-
-impl Schema {
     pub async fn get_tables(&self, db: &mut dyn Connection) -> anyhow::Result<Vec<Table>> {
         let rows = db.query(
             "
@@ -313,6 +212,102 @@ impl Schema {
     }
 }
 
+#[derive(Debug, Clone)] // todo: reconsider Clone
+pub struct TableChanges {
+    current_name: String,
+    real_name: String,
+    column_changes: Vec<ColumnChanges>,
+    removed: bool,
+}
+
+impl TableChanges {
+    fn new(name: String) -> Self {
+        Self {
+            current_name: name.to_string(),
+            real_name: name,
+            column_changes: Vec::new(),
+            removed: false,
+        }
+    }
+
+    pub fn set_name(&mut self, name: String) {
+        self.current_name = name;
+    }
+
+    pub fn change_column<F>(&mut self, current_name: &str, f: F)
+    where
+        F: FnOnce(&mut ColumnChanges),
+    {
+        let column_change_index = self
+            .column_changes
+            .iter()
+            .position(|column| column.current_name == current_name)
+            .unwrap_or_else(|| {
+                let new_changes = ColumnChanges::new(current_name.to_string());
+                self.column_changes.push(new_changes);
+                self.column_changes.len() - 1
+            });
+
+        let column_changes = &mut self.column_changes[column_change_index];
+        f(column_changes)
+    }
+
+    pub fn set_removed(&mut self) {
+        self.removed = true;
+    }
+}
+
+#[derive(Debug, Clone)] // todo: reconsider Clone
+pub struct ColumnChanges {
+    current_name: String,
+    backing_columns: Vec<String>,
+    removed: bool,
+}
+
+impl ColumnChanges {
+    fn new(name: String) -> Self {
+        Self {
+            current_name: name.to_string(),
+            backing_columns: vec![name],
+            removed: false,
+        }
+    }
+
+    pub fn set_name(&mut self, name: String) {
+        self.current_name = name;
+    }
+
+    pub fn set_column(&mut self, column_name: &str) {
+        self.backing_columns.push(column_name.to_string())
+    }
+
+    pub fn set_removed(&mut self) {
+        self.removed = true;
+    }
+
+    fn real_name(&self) -> &str {
+        self.backing_columns
+            .last()
+            .expect("backing_columns should never be empty")
+    }
+}
+
+#[derive(Debug)]
+pub struct Table {
+    pub name: String,
+    pub real_name: String,
+    pub columns: Vec<Column>,
+}
+
+#[derive(Debug)]
+pub struct Column {
+    pub name: String,
+    pub real_name: String,
+    pub data_type: String,
+    pub nullable: bool,
+    pub default: Option<String>,
+}
+
 impl Table {
     pub fn real_column_names<'a>(
         &'a self,
@@ -370,7 +365,7 @@ pub async fn create_new_schema_func(db: &mut dyn Connection, target_migration: &
         "
 			CREATE OR REPLACE FUNCTION reshape.is_new_schema()
 			RETURNS BOOLEAN AS $$
-            DECLARE
+            DECLARE -- todo: ensure this setting doesn't carry over
                 setting TEXT := current_setting('reshape.is_new_schema', TRUE);
                 setting_bool BOOLEAN := setting IS NOT NULL AND setting = 'YES';
 			BEGIN

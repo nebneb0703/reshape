@@ -41,6 +41,7 @@ async fn remove_table() {
     setup_db(&mut reshape, &mut old_db, &first_migration).await;
 
     migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
+    migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
     // Make sure inserts work against the old schema
     old_db.simple_query("INSERT INTO users(id) VALUES (1)").await.unwrap();

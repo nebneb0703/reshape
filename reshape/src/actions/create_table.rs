@@ -43,7 +43,7 @@ impl fmt::Display for CreateTable {
 #[typetag::serde(name = "create_table")]
 #[async_trait::async_trait]
 impl Action for CreateTable {
-    async fn run(
+    async fn begin(
         &self,
         ctx: &MigrationContext,
         db: &mut dyn Connection,
@@ -53,20 +53,21 @@ impl Action for CreateTable {
             .columns
             .iter()
             .map(|column| {
-                let mut parts = vec![format!("\"{}\"", column.name), column.data_type.to_string()];
+                let quoted_column_name = format!("\"{}\"", column.name);
+                let mut parts = vec![quoted_column_name.as_str(), &column.data_type];
 
                 if let Some(default) = &column.default {
-                    parts.push("DEFAULT".to_string());
-                    parts.push(default.to_string());
+                    parts.push("DEFAULT");
+                    parts.push(default);
                 }
 
                 if !column.nullable {
-                    parts.push("NOT NULL".to_string());
+                    parts.push("NOT NULL");
                 }
 
                 if let Some(generated) = &column.generated {
-                    parts.push("GENERATED".to_string());
-                    parts.push(generated.to_string());
+                    parts.push("GENERATED");
+                    parts.push(generated);
                 }
 
                 parts.join(" ")
@@ -197,10 +198,10 @@ impl Action for CreateTable {
         Ok(())
     }
 
-    async fn complete<'a>(
+    async fn complete(
         &self,
         ctx: &MigrationContext,
-        db: &'a mut dyn Connection,
+        db: &mut dyn Connection,
     ) -> anyhow::Result<()> {
         // Remove triggers and procedures
         let query = format!(

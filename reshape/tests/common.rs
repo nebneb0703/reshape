@@ -16,7 +16,7 @@ pub struct Test {
 impl Test {
     pub async fn connect() -> Test {
         let connection_string = std::env::var("TEST_DB_URL")
-            .unwrap_or("postgres://postgres:postgres@localhost/reshape_test".to_string());
+            .unwrap_or("postgres://postgres:postgres@localhost/reshape_test".to_owned());
 
         let (old_db, conn1) = connect(&connection_string, NoTls).await.unwrap();
         let (new_db, conn2) = connect(&connection_string, NoTls).await.unwrap();
@@ -91,6 +91,7 @@ pub async fn migrate(
     let ctx = MigrationContext::new(0, 0, Some(first_migration.name.clone()));
 
     second_migration.migrate(db, &mut ctx.clone(), &mut schema).await?;
+
     schema.create_for_migration(db, &second_migration.name).await.unwrap();
 
     new_db.simple_query(&schema_query_for_migration(&second_migration.name)).await.unwrap();
@@ -137,7 +138,7 @@ pub async fn abort(
         schema_name_for_migration(&second_migration.name),
     )).await.unwrap();
 
-    let ctx = MigrationContext::new(0, second_migration.actions.len().saturating_sub(1), Some(first_migration.name.clone()));
+    let ctx = MigrationContext::new(0, usize::MAX, Some(first_migration.name.clone()));
 
     second_migration.abort(db, &mut ctx.clone()).await.unwrap();
 

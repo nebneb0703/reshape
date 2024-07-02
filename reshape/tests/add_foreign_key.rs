@@ -63,6 +63,7 @@ async fn add_foreign_key() {
         old_db.simple_query("INSERT INTO users (id) VALUES (1), (2)").await.unwrap();
 
         migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
+        migrate(&mut reshape, &mut new_db, &first_migration, &second_migration).await.unwrap();
 
         // Ensure items can be inserted if they reference valid users
         old_db.simple_query("INSERT INTO items (id, user_id) VALUES (1, 1), (2, 2)").await.unwrap();
@@ -73,6 +74,7 @@ async fn add_foreign_key() {
 
         match task {
             Task::Complete => {
+                complete(&mut reshape, &first_migration, &second_migration).await;
                 complete(&mut reshape, &first_migration, &second_migration).await;
 
                 // Ensure items can be inserted if they reference valid users
@@ -95,9 +97,10 @@ async fn add_foreign_key() {
                 .unwrap()
                 .first()
                 .map(|row| row.get(0));
-                assert_eq!(Some("items_user_id_fkey".to_string()), foreign_key_name);
+                assert_eq!(Some("items_user_id_fkey".to_owned()), foreign_key_name);
             },
             Task::Abort => {
+                abort(&mut reshape, &first_migration, &second_migration).await;
                 abort(&mut reshape, &first_migration, &second_migration).await;
 
                 // Ensure foreign key doesn't exist
